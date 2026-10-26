@@ -39,6 +39,8 @@ class MainActivity : Activity() {
     private var lastTapAddress: String? = null
     private var lastTapAt = 0L
     private var editingAddress: String? = null
+    private var selectedRangeCells: List<String> = emptyList()
+    private var selectedRangeLabel: String? = null
 
     private val data get() = sheets.getOrPut(sheetName) { mutableMapOf() }
     private val sheetStyles get() = styles.getOrPut(sheetName) { mutableMapOf() }
@@ -136,7 +138,11 @@ class MainActivity : Activity() {
             }
         }
         val columnWidths = longestByColumn.map { longest -> max(104, minOf(320, 22 + longest * 9)) }
-        for(c in 0 until colLimit) header.addView(makeCell(colName(c),columnWidths[c],true,null))
+        for(c in 0 until colLimit) {
+            val headerCell = makeCell(colName(c),columnWidths[c],true,null)
+            headerCell.setOnClickListener { selectColumn(c) }
+            header.addView(headerCell)
+        }
         grid.addView(header)
         for(r in 1..rowCount) {
             if (filterColumn != null && filterText != null && r > 1) {
@@ -144,10 +150,18 @@ class MainActivity : Activity() {
                 if (!raw.contains(filterText!!, ignoreCase = true)) continue
             }
             val line=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
-            line.addView(makeCell(r.toString(),48,true,null))
+            // Keep every cell in a row the same height, expanding rows when text wraps.
+            val rowHeight = (0 until colLimit).maxOfOrNull { c ->
+                val address = "${colName(c)}$r"
+                val text = display(address)
+                val charsPerLine = max(1, (columnWidths[c] - 8) / 7)
+                val lines = max(1, (text.length + charsPerLine - 1) / charsPerLine)
+                lines * 18 + 4
+            }?.coerceAtLeast(32) ?: 32
+            line.addView(makeCell(r.toString(),48,true,null,rowHeight))
             for(c in 0 until colLimit) {
                 val a="${colName(c)}$r"
-                line.addView(makeCell(display(a),columnWidths[c],false,a))
+                line.addView(makeCell(display(a),columnWidths[c],false,a,rowHeight))
             }
             grid.addView(line)
         }
@@ -187,11 +201,14 @@ class MainActivity : Activity() {
         return max(104, minOf(320, 22 + longest * 9))
     }
 
-    private fun makeCell(value:String,width:Int,header:Boolean,key:String?):TextView {
+    private fun makeCell(value:String,width:Int,header:Boolean,key:String?,cellHeight:Int = 32):TextView {
         val tv=TextView(this).apply {
             text=value; textSize=13f; gravity=if(header||key==null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
-            setSingleLine(true)
-            setPadding(if(header) dp(3) else dp(7),0,dp(3),0)
+            setSingleLine(false)
+            maxLines = Int.MAX_VALUE
+            setHorizontallyScrolling(false)
+            includeFontPadding = false
+            setPadding(0,0,0,0)
             val st = if (key != null) sheetStyles[key] else null
             setTextColor(if(header) Color.rgb(55,67,77) else st?.textColor ?: Color.rgb(24,32,39))
             textSize = st?.fontSize ?: 13f
@@ -227,7 +244,7 @@ class MainActivity : Activity() {
                 true
             }
         }
-        val lp=LinearLayout.LayoutParams(dp(width),dp(32)); lp.setMargins(0,0,dp(1),dp(1)); tv.layoutParams=lp
+        val lp=LinearLayout.LayoutParams(dp(width),dp(cellHeight)); lp.setMargins(0,0,0,0); tv.layoutParams=lp
         return tv
     }
 
@@ -255,7 +272,7 @@ class MainActivity : Activity() {
 
     private fun applyCellBackground(view: TextView, address: String?, header: Boolean) {
         val st = if (address != null) sheetStyles[address] else null
-        val isSelected = address != null && address == selected
+        val isSelected = address != null && (address == selected || address in selectedRangeCells)
         val fill = when {
             header -> Color.rgb(224, 232, 239)
             isSelected -> Color.rgb(207, 239, 220)
@@ -269,22 +286,38 @@ class MainActivity : Activity() {
             else -> Color.rgb(198, 207, 214)
         }
         val strokeWidth = when {
-            isSelected -> 2
+            isSelected -> 1
             st?.border == true && st.thickBorder -> 2
             else -> 1
         }
         view.background = android.graphics.drawable.GradientDrawable().apply {
             setColor(fill)
-            setStroke(dp(strokeWidth), strokeColor)
+            setStroke(if (strokeWidth == 1) 1 else dp(strokeWidth), strokeColor)
         }
     }
 
+    private fun selectColumn(column: Int) {
+        val col = colName(column)
+        selectedRangeLabel = "$col:$col"
+        selectedRangeCells = (1..rowCount).map { "$col$it" }
+        selected = "${col}1"
+        cellName.text = selectedRangeLabel
+        formula.setText("")
+        render()
+        status.text = "Selected entire column $col · ${selectedRangeCells.size} cells. Open Format or Range to apply changes."
+    }
+
     private fun select(address:String) {
-        if (selected != address) {
+        val previousRange = selectedRangeCells
+        val previousRangeLabel = selectedRangeLabel
+        selectedRangeCells = emptyList()
+        selectedRangeLabel = null
+        if (selected != address || previousRange.isNotEmpty()) {
             val oldView = selectedCellView
             val oldAddress = selected
             selected = address
-            // Repaint the previous cell after selected changes, so it loses the selection border.
+            // Remove highlight from every cell in a previously selected column/range.
+            previousRange.forEach { cellViews[it]?.let { view -> applyCellBackground(view, it, false) } }
             oldView?.let { applyCellBackground(it, oldAddress, false) }
             selectedCellView = cellViews[address]
             selectedCellView?.let { applyCellBackground(it, address, false) }
@@ -431,7 +464,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(6), dp(20), dp(4))
             addView(TextView(this@MainActivity).apply {
-                text = "Enter a cell range or whole column/row range. Example: A1:C5"
+                text = "Choose cells, rows, or columns. Examples: A1:C5, B:B, 2:8. Next opens text/fill colour and formatting options."
                 textSize = 13f
                 setTextColor(Color.DKGRAY)
             })
@@ -539,27 +572,38 @@ class MainActivity : Activity() {
     }
 
     private fun formattingMenu() {
+        val rangeCells = selectedRangeCells.toList()
+        val targetLabel = selectedRangeLabel ?: selected
         val options = arrayOf(
             "Bold on/off", "Italic on/off", "Underline on/off", "Font size", "Text color", "Cell fill color",
             "Alignment", "Number format", "Cell borders", "Clear formatting", "Clear cell", "Find / replace"
         )
-        AlertDialog.Builder(this).setTitle("Format $selected").setItems(options) { _, which ->
-            val address = selected
-            val st = styleFor(address)
+        AlertDialog.Builder(this).setTitle("Format $targetLabel").setItems(options) { _, which ->
+            val targets = if (rangeCells.isNotEmpty()) rangeCells else listOf(selected)
+            fun refresh(message: String) { render(); status.text = "$message: $targetLabel" }
             when (which) {
-                0 -> { st.bold = !st.bold; render(); status.text = "Bold updated: $address" }
-                1 -> { st.italic = !st.italic; render(); status.text = "Italic updated: $address" }
-                2 -> { st.underline = !st.underline; render(); status.text = "Underline updated: $address" }
-                3 -> chooseFontSize()
-                4 -> chooseColor("Text color") { color -> styleFor(address).textColor = color; render() }
-                5 -> chooseColor("Cell fill") { color -> styleFor(address).fillColor = color; render() }
-                6 -> chooseAlignment()
-                7 -> chooseNumberFormat()
-                8 -> { st.border = !st.border; render(); status.text = "Borders updated: $address" }
-                9 -> { sheetStyles.remove(address); render(); status.text = "Formatting cleared: $address" }
-                10 -> { putCell(address, ""); formula.setText(""); render(); status.text = "Cell cleared: $address" }
+                0 -> { targets.forEach { styleFor(it).bold = !styleFor(it).bold }; refresh("Bold updated") }
+                1 -> { targets.forEach { styleFor(it).italic = !styleFor(it).italic }; refresh("Italic updated") }
+                2 -> { targets.forEach { styleFor(it).underline = !styleFor(it).underline }; refresh("Underline updated") }
+                3 -> if (rangeCells.isNotEmpty()) chooseRangeFontSize(targetLabel, targets) else chooseFontSize()
+                4 -> chooseColor("Text color for $targetLabel") { color -> targets.forEach { styleFor(it).textColor = color }; refresh("Text color applied") }
+                5 -> chooseColor("Cell fill color for $targetLabel") { color -> targets.forEach { styleFor(it).fillColor = color }; refresh("Cell fill applied") }
+                6 -> chooseAlignmentForTargets(targets, targetLabel)
+                7 -> if (rangeCells.isNotEmpty()) chooseRangeNumberFormat(targetLabel, targets) else chooseNumberFormat()
+                8 -> { targets.forEach { styleFor(it).border = !styleFor(it).border }; refresh("Borders updated") }
+                9 -> { targets.forEach { sheetStyles.remove(it) }; refresh("Formatting cleared") }
+                10 -> { if (rangeCells.isNotEmpty()) { targets.forEach { data.remove(it) }; formula.setText(""); refresh("Contents cleared") } else { putCell(selected, ""); formula.setText(""); render(); status.text = "Cell cleared: $selected" } }
                 11 -> findReplaceMenu()
             }
+        }.show()
+    }
+
+    private fun chooseAlignmentForTargets(targets: List<String>, label: String) {
+        val opts = arrayOf("Left", "Center", "Right")
+        AlertDialog.Builder(this).setTitle("Alignment for $label").setItems(opts) { _, index ->
+            val alignment = when (index) { 1 -> Gravity.CENTER; 2 -> Gravity.CENTER_VERTICAL or Gravity.END; else -> Gravity.CENTER_VERTICAL or Gravity.START }
+            targets.forEach { styleFor(it).alignment = alignment }
+            render(); status.text = "Alignment applied to $label"
         }.show()
     }
 

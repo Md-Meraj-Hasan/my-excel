@@ -14,11 +14,15 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
 import java.io.FileOutputStream
+import java.net.Socket
 
 /** Optional FastAPI-powered web spreadsheet. Existing native workbook UI remains available. */
 class FastApiActivity : Activity() {
     private lateinit var webView: WebView
     private val localUrl = "http://127.0.0.1:8765/"
+    @Volatile private var engineReady = false
+    @Volatile private var engineFailed = false
+    private var mainFrameErrorShown = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,9 +43,9 @@ class FastApiActivity : Activity() {
             settings.allowContentAccess = false
             webViewClient = object : WebViewClient() {
                 override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
-                    if (request?.isForMainFrame == true) {
-                        Toast.makeText(this@FastApiActivity, "Starting local Excel engine…", Toast.LENGTH_SHORT).show()
-                        view?.postDelayed({ view.loadUrl(localUrl) }, 900)
+                    if (request?.isForMainFrame == true && !mainFrameErrorShown) {
+                        mainFrameErrorShown = true
+                        Toast.makeText(this@FastApiActivity, "Excel Web Engine connection failed. Go back and try Web again.", Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -56,10 +60,36 @@ class FastApiActivity : Activity() {
                 try {
                     Python.getInstance().getModule("server").callAttr("start_server", filesDir.absolutePath)
                 } catch (e: Exception) {
-                    runOnUiThread { Toast.makeText(this, "Local engine failed: ${e.message}", Toast.LENGTH_LONG).show() }
+                    engineFailed = true
+                    runOnUiThread {
+                        if (!isFinishing) Toast.makeText(this, "Local engine failed to start: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
                 }
             }.apply { name = "NiceExcel-FastAPI"; isDaemon = true; start() }
-            webView.postDelayed({ webView.loadUrl(localUrl) }, 1200)
+
+            // Do not load WebView until Uvicorn is actually listening. This avoids
+            // the old fixed-delay race and repeated ERR_CONNECTION_REFUSED popups.
+            Thread {
+                val deadline = System.currentTimeMillis() + 20000L
+                while (System.currentTimeMillis() < deadline && !engineFailed && !isFinishing) {
+                    try {
+                        Socket().use { socket -> socket.connect(java.net.InetSocketAddress("127.0.0.1", 8765), 350) }
+                        engineReady = true
+                        break
+                    } catch (_: Exception) {
+                        try { Thread.sleep(250) } catch (_: InterruptedException) { return@Thread }
+                    }
+                }
+                runOnUiThread {
+                    if (isFinishing) return@runOnUiThread
+                    if (engineReady) {
+                        mainFrameErrorShown = false
+                        webView.loadUrl(localUrl)
+                    } else if (!engineFailed) {
+                        Toast.makeText(this, "Excel engine did not become ready. Please reopen Web.", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }.apply { name = "NiceExcel-EngineReady"; isDaemon = true; start() }
         } catch (e: Exception) {
             Toast.makeText(this, "Python runtime could not start: ${e.message}", Toast.LENGTH_LONG).show()
         }
