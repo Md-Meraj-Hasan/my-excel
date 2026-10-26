@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private var lastTapAddress: String? = null
     private var lastTapAt = 0L
     private var editingAddress: String? = null
+    private var zoomFactor = 1.0f
 
     private val data get() = sheets.getOrPut(sheetName) { mutableMapOf() }
     private val sheetStyles get() = styles.getOrPut(sheetName) { mutableMapOf() }
@@ -67,6 +68,9 @@ class MainActivity : Activity() {
         val toolbar = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(12),dp(8),dp(6),dp(8)); setBackgroundColor(Color.rgb(17,94,57)) }
         toolbar.addView(TextView(this).apply { text="Nice Excel"; textSize=21f; typeface=Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE) }, LinearLayout.LayoutParams(0,-2,1f))
         toolbar.addView(tool("＋") { addSheet() })
+        val zoomButton = tool("🔍−") { zoomOut() }
+        zoomButton.setOnLongClickListener { zoomOptions(); true }
+        toolbar.addView(zoomButton)
         toolbar.addView(tool("↶") { undo() })
         toolbar.addView(tool("↷") { redo() })
         toolbar.addView(tool("Open") { openMenu() })
@@ -111,6 +115,38 @@ class MainActivity : Activity() {
         root.addView(status)
         setContentView(root)
         render()
+    }
+
+    private fun zoomOut() {
+        if (zoomFactor > 0.2f) {
+            zoomFactor = (zoomFactor - 0.1f).coerceAtLeast(0.2f)
+            render()
+            status.text = "Zoom out · ${(zoomFactor * 100).toInt()}%"
+        } else {
+            status.text = "Minimum zoom reached · 20%"
+        }
+    }
+
+    private fun zoomOptions() {
+        val options = arrayOf("Zoom out", "Minimum zoom (20%)", "Reset to 100%")
+        AlertDialog.Builder(this)
+            .setTitle("Table size · ${(zoomFactor * 100).toInt()}%")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> zoomOut()
+                    1 -> {
+                        zoomFactor = 0.2f
+                        render()
+                        status.text = "Minimum zoom · 20%"
+                    }
+                    2 -> {
+                        zoomFactor = 1.0f
+                        render()
+                        status.text = "Zoom 100%"
+                    }
+                }
+            }
+            .show()
     }
 
     private fun tool(label:String, action:()->Unit)=TextView(this).apply {
@@ -185,7 +221,7 @@ class MainActivity : Activity() {
             setPadding(if(header) dp(3) else dp(7),0,dp(3),0)
             val st = if (key != null) sheetStyles[key] else null
             setTextColor(if(header) Color.rgb(55,67,77) else st?.textColor ?: Color.rgb(24,32,39))
-            textSize = st?.fontSize ?: 13f
+            textSize = (st?.fontSize ?: 13f) * zoomFactor
             typeface = Typeface.create(Typeface.DEFAULT, (if (st?.bold == true || header) Typeface.BOLD else Typeface.NORMAL) or (if (st?.italic == true) Typeface.ITALIC else Typeface.NORMAL))
             paint.isUnderlineText = st?.underline == true
             gravity = st?.alignment ?: if(header||key==null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
@@ -218,7 +254,7 @@ class MainActivity : Activity() {
                 true
             }
         }
-        val lp=LinearLayout.LayoutParams(dp(width),dp(32)); lp.setMargins(0,0,dp(1),dp(1)); tv.layoutParams=lp
+        val lp=LinearLayout.LayoutParams(dp((width * zoomFactor).toInt()),dp((32 * zoomFactor).toInt())); lp.setMargins(0,0,dp(1),dp(1)); tv.layoutParams=lp
         return tv
     }
 
