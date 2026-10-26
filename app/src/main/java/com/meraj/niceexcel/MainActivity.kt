@@ -74,10 +74,11 @@ class MainActivity : Activity() {
         root.addView(toolbar)
 
         val ribbon = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(5),dp(5),dp(5),dp(5)); setBackgroundColor(Color.WHITE) }
-        listOf("Home","Format","Table","Formula","Sort","Filter","Find","Web").forEach { label ->
+        listOf("Home","Range","Format","Table","Formula","Sort","Filter","Find","Web").forEach { label ->
             ribbon.addView(ribbonButton(label) {
                 when(label) {
                     "Formula" -> formulaHelp()
+                    "Range" -> rangeToolsMenu()
                     "Web" -> startActivity(Intent(this, FastApiActivity::class.java))
                     "Sort" -> sortColumn()
                     "Filter" -> filterMenu()
@@ -125,7 +126,8 @@ class MainActivity : Activity() {
         grid.removeAllViews()
         val header=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
         header.addView(makeCell("",48,true,null))
-        for(c in 0 until colLimit) header.addView(makeCell(colName(c),104,true,null))
+        val columnWidths = (0 until colLimit).map { c -> calculatedColumnWidth(c) }
+        for(c in 0 until colLimit) header.addView(makeCell(colName(c),columnWidths[c],true,null))
         grid.addView(header)
         for(r in 1..rowCount) {
             if (filterColumn != null && filterText != null && r > 1) {
@@ -136,7 +138,7 @@ class MainActivity : Activity() {
             line.addView(makeCell(r.toString(),48,true,null))
             for(c in 0 until colLimit) {
                 val a="${colName(c)}$r"
-                line.addView(makeCell(display(a),104,false,a))
+                line.addView(makeCell(display(a),columnWidths[c],false,a))
             }
             grid.addView(line)
         }
@@ -165,9 +167,21 @@ class MainActivity : Activity() {
         renderTabs()
     }
 
+    private fun calculatedColumnWidth(column: Int): Int {
+        val name = colName(column)
+        val longest = data.entries.asSequence()
+            .filter { it.key.startsWith(name) && it.key.drop(name.length).toIntOrNull() != null }
+            .map { display(it.key).length }
+            .maxOrNull() ?: name.length
+        // Keep the familiar default width, but expand columns for longer text.
+        // Cap the width so a very long value does not swallow the entire sheet.
+        return max(104, minOf(320, 22 + longest * 9))
+    }
+
     private fun makeCell(value:String,width:Int,header:Boolean,key:String?):TextView {
         val tv=TextView(this).apply {
             text=value; textSize=13f; gravity=if(header||key==null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
+            setSingleLine(true)
             setPadding(if(header) dp(3) else dp(7),0,dp(3),0)
             val st = if (key != null) sheetStyles[key] else null
             setTextColor(if(header) Color.rgb(55,67,77) else st?.textColor ?: Color.rgb(24,32,39))
@@ -232,17 +246,27 @@ class MainActivity : Activity() {
 
     private fun applyCellBackground(view: TextView, address: String?, header: Boolean) {
         val st = if (address != null) sheetStyles[address] else null
-        when {
-            header -> view.setBackgroundColor(Color.rgb(228,235,240))
-            address == selected -> view.setBackgroundColor(Color.rgb(213,241,223))
-            st != null -> view.setBackgroundColor(st.fillColor)
-            else -> view.setBackgroundColor(Color.WHITE)
+        val isSelected = address != null && address == selected
+        val fill = when {
+            header -> Color.rgb(224, 232, 239)
+            isSelected -> Color.rgb(207, 239, 220)
+            st != null -> st.fillColor
+            else -> Color.WHITE
         }
-        if (st?.border == true) {
-            view.background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(if (address == selected) Color.rgb(213,241,223) else st.fillColor)
-                setStroke(dp(if (st.thickBorder) 2 else 1), Color.rgb(70,80,88))
-            }
+        val strokeColor = when {
+            header -> Color.rgb(174, 187, 198)
+            isSelected -> Color.rgb(17, 125, 72)
+            st?.border == true -> Color.rgb(70, 80, 88)
+            else -> Color.rgb(198, 207, 214)
+        }
+        val strokeWidth = when {
+            isSelected -> 2
+            st?.border == true && st.thickBorder -> 2
+            else -> 1
+        }
+        view.background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(fill)
+            setStroke(dp(strokeWidth), strokeColor)
         }
     }
 
@@ -390,6 +414,125 @@ class MainActivity : Activity() {
             .setMessage("Arithmetic: =A1+B1, =B2*C2\nRanges: =SUM(A1:A10)\nFunctions: SUM, AVERAGE, MIN, MAX, COUNT, COUNTA, COUNTIF, COUNTBLANK, SUMIF, IF, AND, OR, PRODUCT, ABS, SQRT, INT, ROUND, ROUNDUP, ROUNDDOWN, MOD, POWER, CEILING, FLOOR")
             .setPositiveButton("OK",null).show()
     }
+    private fun rangeToolsMenu() {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            hint = "Example: A1:C5, B:B, or 2:8"
+            setText(selected)
+            setSelection(text.length)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(6), dp(20), dp(4))
+            addView(TextView(this@MainActivity).apply {
+                text = "Enter a cell range or whole column/row range. Example: A1:C5"
+                textSize = 13f
+                setTextColor(Color.DKGRAY)
+            })
+            addView(input)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Apply tools to range")
+            .setView(panel)
+            .setPositiveButton("Next") { _, _ ->
+                val range = parseCellRange(input.text.toString())
+                if (range.isEmpty()) {
+                    status.text = "Invalid range. Try A1:C5, B:B, or 2:8"
+                    Toast.makeText(this, "Invalid range", Toast.LENGTH_SHORT).show()
+                } else {
+                    showRangeActions(input.text.toString().trim().uppercase(Locale.ROOT), range)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun parseCellRange(raw: String): List<String> {
+        val text = raw.trim().uppercase(Locale.ROOT).replace("$", "")
+        if (text.isEmpty()) return emptyList()
+        val cellPattern = Regex("^([A-Z]+)([0-9]+)$")
+        val columnPattern = Regex("^([A-Z]+):([A-Z]+)$")
+        val rowPattern = Regex("^([0-9]+):([0-9]+)$")
+        val parts = text.split(":")
+        if (parts.size == 1) {
+            val m = cellPattern.matchEntire(text) ?: return emptyList()
+            val col = columnIndex(m.groupValues[1])
+            val row = m.groupValues[2].toIntOrNull() ?: return emptyList()
+            return if (col in 0 until colLimit && row in 1..rowCount) listOf("${colName(col)}$row") else emptyList()
+        }
+        if (parts.size != 2) return emptyList()
+        val cm = columnPattern.matchEntire(text)
+        if (cm != null) {
+            val c1 = columnIndex(cm.groupValues[1]); val c2 = columnIndex(cm.groupValues[2])
+            if (c1 !in 0 until colLimit || c2 !in 0 until colLimit || c1 > c2) return emptyList()
+            return buildList { for (r in 1..rowCount) for (c in c1..c2) add("${colName(c)}$r") }
+        }
+        val rm = rowPattern.matchEntire(text)
+        if (rm != null) {
+            val r1 = rm.groupValues[1].toIntOrNull() ?: return emptyList()
+            val r2 = rm.groupValues[2].toIntOrNull() ?: return emptyList()
+            if (r1 !in 1..rowCount || r2 !in 1..rowCount || r1 > r2) return emptyList()
+            return buildList { for (r in r1..r2) for (c in 0 until colLimit) add("${colName(c)}$r") }
+        }
+        val a = cellPattern.matchEntire(parts[0]) ?: return emptyList()
+        val b = cellPattern.matchEntire(parts[1]) ?: return emptyList()
+        val c1 = columnIndex(a.groupValues[1]); val c2 = columnIndex(b.groupValues[1])
+        val r1 = a.groupValues[2].toIntOrNull() ?: return emptyList()
+        val r2 = b.groupValues[2].toIntOrNull() ?: return emptyList()
+        if (c1 !in 0 until colLimit || c2 !in 0 until colLimit || r1 !in 1..rowCount || r2 !in 1..rowCount || c1 > c2 || r1 > r2) return emptyList()
+        return buildList { for (r in r1..r2) for (c in c1..c2) add("${colName(c)}$r") }
+    }
+
+    private fun showRangeActions(rangeLabel: String, cells: List<String>) {
+        val actions = arrayOf(
+            "Text color", "Cell fill color", "Text alignment", "Bold on/off",
+            "Italic on/off", "Underline on/off", "Font size", "Number format",
+            "Cell borders on/off", "Clear formatting", "Clear cell contents"
+        )
+        AlertDialog.Builder(this).setTitle("Range $rangeLabel · ${cells.size} cells")
+            .setItems(actions) { _, which ->
+                when (which) {
+                    0 -> chooseColor("Text color for $rangeLabel") { color -> cells.forEach { styleFor(it).textColor = color }; render(); status.text = "Text color applied to $rangeLabel" }
+                    1 -> chooseColor("Cell fill for $rangeLabel") { color -> cells.forEach { styleFor(it).fillColor = color }; render(); status.text = "Cell fill applied to $rangeLabel" }
+                    2 -> {
+                        val options = arrayOf("Left", "Center", "Right")
+                        AlertDialog.Builder(this).setTitle("Alignment for $rangeLabel").setItems(options) { _, index ->
+                            val gravity = when (index) { 1 -> Gravity.CENTER; 2 -> Gravity.CENTER_VERTICAL or Gravity.END; else -> Gravity.CENTER_VERTICAL or Gravity.START }
+                            cells.forEach { styleFor(it).alignment = gravity }
+                            render(); status.text = "Alignment applied to $rangeLabel"
+                        }.show()
+                    }
+                    3 -> { cells.forEach { styleFor(it).bold = !styleFor(it).bold }; render(); status.text = "Bold toggled for $rangeLabel" }
+                    4 -> { cells.forEach { styleFor(it).italic = !styleFor(it).italic }; render(); status.text = "Italic toggled for $rangeLabel" }
+                    5 -> { cells.forEach { styleFor(it).underline = !styleFor(it).underline }; render(); status.text = "Underline toggled for $rangeLabel" }
+                    6 -> chooseRangeFontSize(rangeLabel, cells)
+                    7 -> chooseRangeNumberFormat(rangeLabel, cells)
+                    8 -> { cells.forEach { styleFor(it).border = !styleFor(it).border }; render(); status.text = "Borders toggled for $rangeLabel" }
+                    9 -> { cells.forEach { sheetStyles.remove(it) }; render(); status.text = "Formatting cleared for $rangeLabel" }
+                    10 -> { cells.forEach { data.remove(it) }; if (selected in cells) formula.setText(""); render(); status.text = "Contents cleared for $rangeLabel" }
+                }
+            }.show()
+    }
+
+    private fun chooseRangeFontSize(rangeLabel: String, cells: List<String>) {
+        val input = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(styleFor(selected).fontSize.toInt().toString()); hint = "8–32" }
+        AlertDialog.Builder(this).setTitle("Font size for $rangeLabel").setView(input)
+            .setPositiveButton("Apply") { _, _ ->
+                val size = input.text.toString().toFloatOrNull()?.coerceIn(8f, 32f)
+                if (size != null) cells.forEach { styleFor(it).fontSize = size }
+                render(); status.text = "Font size applied to $rangeLabel"
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun chooseRangeNumberFormat(rangeLabel: String, cells: List<String>) {
+        val opts = arrayOf("General", "Number (2 decimals)", "Percentage", "Currency", "Date (text display)")
+        AlertDialog.Builder(this).setTitle("Number format for $rangeLabel").setItems(opts) { _, index ->
+            cells.forEach { styleFor(it).numberFormat = opts[index] }
+            render(); status.text = "Number format applied to $rangeLabel"
+        }.show()
+    }
+
     private fun formattingMenu() {
         val options = arrayOf(
             "Bold on/off", "Italic on/off", "Underline on/off", "Font size", "Text color", "Cell fill color",
@@ -430,9 +573,24 @@ class MainActivity : Activity() {
 
     private fun chooseAlignment() {
         val opts = arrayOf("Left", "Center", "Right")
-        AlertDialog.Builder(this).setTitle("Cell alignment").setItems(opts) { _, i ->
-            styleFor(selected).alignment = when (i) { 1 -> Gravity.CENTER; 2 -> Gravity.CENTER_VERTICAL or Gravity.END; else -> Gravity.CENTER_VERTICAL or Gravity.START }
-            render()
+        AlertDialog.Builder(this).setTitle("Text alignment").setItems(opts) { _, alignmentIndex ->
+            val alignment = when (alignmentIndex) {
+                1 -> Gravity.CENTER
+                2 -> Gravity.CENTER_VERTICAL or Gravity.END
+                else -> Gravity.CENTER_VERTICAL or Gravity.START
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Apply alignment to")
+                .setItems(arrayOf("Selected cell only", "Entire column")) { _, scope ->
+                    if (scope == 0) {
+                        styleFor(selected).alignment = alignment
+                    } else {
+                        val col = Regex("^([A-Z]+)").find(selected)?.groupValues?.get(1) ?: "A"
+                        for (row in 1..rowCount) styleFor("$col$row").alignment = alignment
+                    }
+                    render()
+                    status.text = if (scope == 0) "Alignment applied to $selected" else "Alignment applied to column ${Regex("^([A-Z]+)").find(selected)?.groupValues?.get(1) ?: "A"}"
+                }.show()
         }.show()
     }
 
