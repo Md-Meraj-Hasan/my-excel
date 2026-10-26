@@ -204,7 +204,7 @@ class MainActivity : Activity() {
                 true
             }
         }
-        val lp=LinearLayout.LayoutParams(dp(width),dp(38)); lp.setMargins(0,0,dp(1),dp(1)); tv.layoutParams=lp
+        val lp=LinearLayout.LayoutParams(dp(width),dp(32)); lp.setMargins(0,0,dp(1),dp(1)); tv.layoutParams=lp
         return tv
     }
 
@@ -273,7 +273,7 @@ class MainActivity : Activity() {
             setPadding(dp(7), 0, dp(3), 0)
             setBackgroundColor(Color.rgb(232, 250, 239))
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
-            minHeight = cell.height
+            minHeight = dp(32)
         }
         editingAddress = address
         parent.removeViewAt(index)
@@ -296,9 +296,22 @@ class MainActivity : Activity() {
             status.text = if (save) "Updated $sheetName!$address" else "Edit cancelled"
         }
         editor.setOnEditorActionListener { _, actionId, event ->
-            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE ||
-                (event != null && event.keyCode == android.view.KeyEvent.KEYCODE_ENTER && event.action == android.view.KeyEvent.ACTION_UP)) {
-                finish(true)
+            val enterPressed =
+                actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE ||
+                actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
+                (event != null && event.keyCode == android.view.KeyEvent.KEYCODE_ENTER &&
+                    event.action == android.view.KeyEvent.ACTION_UP)
+            if (enterPressed) {
+                // Commit the current text but keep the inline editor and keyboard active.
+                // This avoids the keyboard's Done/Enter key unexpectedly closing editing.
+                val currentValue = editor.text.toString()
+                if (data[address] != currentValue) {
+                    undoState = address to data[address]
+                    redoState = null
+                    if (currentValue.isEmpty()) data.remove(address) else data[address] = currentValue
+                }
+                editor.setSelection(editor.text.length)
+                status.text = "Updated $sheetName!$address"
                 true
             } else false
         }
