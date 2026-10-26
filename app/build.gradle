@@ -1,27 +1,42 @@
+
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
 }
+
 android {
     namespace 'com.meraj.niceexcel'
     compileSdk 35
+
     defaultConfig {
         applicationId 'com.meraj.niceexcel'
         minSdk 24
         targetSdk 35
+
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+
         versionCode 15
         versionName '1.5.0'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
     }
 }
 
 dependencies {
-    // Imported formula evaluator: broad spreadsheet function support.
+    // Imported formula evaluator
     implementation 'org.apache.poi:poi:5.4.1'
-    testImplementation 'junit:junit:4.13.2'
-}
 
-dependencies {
+    // Unit tests
+    testImplementation 'junit:junit:4.13.2'
+
+    // Android instrumentation tests
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     androidTestImplementation 'androidx.test:runner:1.6.2'
 }
