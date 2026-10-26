@@ -39,7 +39,6 @@ class MainActivity : Activity() {
     private var lastTapAddress: String? = null
     private var lastTapAt = 0L
     private var editingAddress: String? = null
-    private var zoomFactor = 1.0f
 
     private val data get() = sheets.getOrPut(sheetName) { mutableMapOf() }
     private val sheetStyles get() = styles.getOrPut(sheetName) { mutableMapOf() }
@@ -68,9 +67,6 @@ class MainActivity : Activity() {
         val toolbar = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(12),dp(8),dp(6),dp(8)); setBackgroundColor(Color.rgb(17,94,57)) }
         toolbar.addView(TextView(this).apply { text="Nice Excel"; textSize=21f; typeface=Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE) }, LinearLayout.LayoutParams(0,-2,1f))
         toolbar.addView(tool("＋") { addSheet() })
-        val zoomButton = tool("🔍−") { zoomOut() }
-        zoomButton.setOnLongClickListener { zoomOptions(); true }
-        toolbar.addView(zoomButton)
         toolbar.addView(tool("↶") { undo() })
         toolbar.addView(tool("↷") { redo() })
         toolbar.addView(tool("Open") { openMenu() })
@@ -117,38 +113,6 @@ class MainActivity : Activity() {
         render()
     }
 
-    private fun zoomOut() {
-        if (zoomFactor > 0.2f) {
-            zoomFactor = (zoomFactor - 0.1f).coerceAtLeast(0.2f)
-            render()
-            status.text = "Zoom out · ${(zoomFactor * 100).toInt()}%"
-        } else {
-            status.text = "Minimum zoom reached · 20%"
-        }
-    }
-
-    private fun zoomOptions() {
-        val options = arrayOf("Zoom out", "Minimum zoom (20%)", "Reset to 100%")
-        AlertDialog.Builder(this)
-            .setTitle("Table size · ${(zoomFactor * 100).toInt()}%")
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> zoomOut()
-                    1 -> {
-                        zoomFactor = 0.2f
-                        render()
-                        status.text = "Minimum zoom · 20%"
-                    }
-                    2 -> {
-                        zoomFactor = 1.0f
-                        render()
-                        status.text = "Zoom 100%"
-                    }
-                }
-            }
-            .show()
-    }
-
     private fun tool(label:String, action:()->Unit)=TextView(this).apply {
         text=label; textSize=14f; gravity=Gravity.CENTER; setTextColor(Color.WHITE); setPadding(dp(9),dp(9),dp(9),dp(9)); setOnClickListener { action() }
     }
@@ -162,7 +126,16 @@ class MainActivity : Activity() {
         grid.removeAllViews()
         val header=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
         header.addView(makeCell("",48,true,null))
-        val columnWidths = (0 until colLimit).map { c -> calculatedColumnWidth(c) }
+        val longestByColumn = IntArray(colLimit) { c -> colName(c).length }
+        data.forEach { (address, rawValue) ->
+            val match = Regex("^([A-Z]+)(\\d+)$").matchEntire(address) ?: return@forEach
+            val column = columnIndex(match.groupValues[1])
+            if (column in 0 until colLimit) {
+                val shownLength = display(address).length
+                if (shownLength > longestByColumn[column]) longestByColumn[column] = shownLength
+            }
+        }
+        val columnWidths = longestByColumn.map { longest -> max(104, minOf(320, 22 + longest * 9)) }
         for(c in 0 until colLimit) header.addView(makeCell(colName(c),columnWidths[c],true,null))
         grid.addView(header)
         for(r in 1..rowCount) {
@@ -221,7 +194,7 @@ class MainActivity : Activity() {
             setPadding(if(header) dp(3) else dp(7),0,dp(3),0)
             val st = if (key != null) sheetStyles[key] else null
             setTextColor(if(header) Color.rgb(55,67,77) else st?.textColor ?: Color.rgb(24,32,39))
-            textSize = (st?.fontSize ?: 13f) * zoomFactor
+            textSize = st?.fontSize ?: 13f
             typeface = Typeface.create(Typeface.DEFAULT, (if (st?.bold == true || header) Typeface.BOLD else Typeface.NORMAL) or (if (st?.italic == true) Typeface.ITALIC else Typeface.NORMAL))
             paint.isUnderlineText = st?.underline == true
             gravity = st?.alignment ?: if(header||key==null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
@@ -254,7 +227,7 @@ class MainActivity : Activity() {
                 true
             }
         }
-        val lp=LinearLayout.LayoutParams(dp((width * zoomFactor).toInt()),dp((32 * zoomFactor).toInt())); lp.setMargins(0,0,dp(1),dp(1)); tv.layoutParams=lp
+        val lp=LinearLayout.LayoutParams(dp(width),dp(32)); lp.setMargins(0,0,dp(1),dp(1)); tv.layoutParams=lp
         return tv
     }
 
@@ -308,8 +281,11 @@ class MainActivity : Activity() {
 
     private fun select(address:String) {
         if (selected != address) {
-            selectedCellView?.let { old -> applyCellBackground(old, old.tag as? String, false) }
+            val oldView = selectedCellView
+            val oldAddress = selected
             selected = address
+            // Repaint the previous cell after selected changes, so it loses the selection border.
+            oldView?.let { applyCellBackground(it, oldAddress, false) }
             selectedCellView = cellViews[address]
             selectedCellView?.let { applyCellBackground(it, address, false) }
         }
@@ -332,7 +308,7 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             setPadding(dp(7), 0, dp(3), 0)
             setBackgroundColor(Color.rgb(232, 250, 239))
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
             minHeight = dp(32)
         }
         editingAddress = address
@@ -359,19 +335,12 @@ class MainActivity : Activity() {
             val enterPressed =
                 actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE ||
                 actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
+                actionId == android.view.inputmethod.EditorInfo.IME_ACTION_NEXT ||
                 (event != null && event.keyCode == android.view.KeyEvent.KEYCODE_ENTER &&
                     event.action == android.view.KeyEvent.ACTION_UP)
             if (enterPressed) {
-                // Commit the current text but keep the inline editor and keyboard active.
-                // This avoids the keyboard's Done/Enter key unexpectedly closing editing.
-                val currentValue = editor.text.toString()
-                if (data[address] != currentValue) {
-                    undoState = address to data[address]
-                    redoState = null
-                    if (currentValue.isEmpty()) data.remove(address) else data[address] = currentValue
-                }
-                editor.setSelection(editor.text.length)
-                status.text = "Updated $sheetName!$address"
+                // One Enter/Done press saves the cell, dismisses the keyboard and exits inline edit.
+                finish(true)
                 true
             } else false
         }
@@ -575,22 +544,22 @@ class MainActivity : Activity() {
             "Alignment", "Number format", "Cell borders", "Clear formatting", "Clear cell", "Find / replace"
         )
         AlertDialog.Builder(this).setTitle("Format $selected").setItems(options) { _, which ->
-            val st = styleFor(selected)
+            val address = selected
+            val st = styleFor(address)
             when (which) {
-                0 -> st.bold = !st.bold
-                1 -> st.italic = !st.italic
-                2 -> st.underline = !st.underline
+                0 -> { st.bold = !st.bold; render(); status.text = "Bold updated: $address" }
+                1 -> { st.italic = !st.italic; render(); status.text = "Italic updated: $address" }
+                2 -> { st.underline = !st.underline; render(); status.text = "Underline updated: $address" }
                 3 -> chooseFontSize()
-                4 -> chooseColor("Text color") { st.textColor = it; render() }
-                5 -> chooseColor("Cell fill") { st.fillColor = it; render() }
+                4 -> chooseColor("Text color") { color -> styleFor(address).textColor = color; render() }
+                5 -> chooseColor("Cell fill") { color -> styleFor(address).fillColor = color; render() }
                 6 -> chooseAlignment()
                 7 -> chooseNumberFormat()
-                8 -> st.border = !st.border
-                9 -> sheetStyles.remove(selected)
-                10 -> { putCell(selected, ""); formula.setText("") }
+                8 -> { st.border = !st.border; render(); status.text = "Borders updated: $address" }
+                9 -> { sheetStyles.remove(address); render(); status.text = "Formatting cleared: $address" }
+                10 -> { putCell(address, ""); formula.setText(""); render(); status.text = "Cell cleared: $address" }
                 11 -> findReplaceMenu()
             }
-            render(); status.text = "Formatting updated: $selected"
         }.show()
     }
 
