@@ -86,7 +86,7 @@ class MainActivity : Activity() {
         val formulaBar=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(6),dp(4),dp(6),dp(4)); setBackgroundColor(Color.rgb(255,255,255)) }
         cellName=TextView(this).apply { text=selected; textSize=14f; typeface=Typeface.DEFAULT_BOLD; gravity=Gravity.CENTER; setTextColor(Color.rgb(17,94,57)); setPadding(dp(10),dp(11),dp(10),dp(11)); setBackgroundColor(Color.rgb(225,242,232)) }
         formulaBar.addView(cellName)
-        formula=EditText(this).apply { singleLine=true; textSize=14f; hint="Enter value or formula"; inputType=InputType.TYPE_CLASS_TEXT; setPadding(dp(8),dp(3),dp(8),dp(3)); setBackgroundColor(Color.WHITE); setText(data[selected].orEmpty()); setOnEditorActionListener { _,_,_ -> applyFormula(); true } }
+        formula=EditText(this).apply { setSingleLine(true); textSize=14f; hint="Enter value or formula"; inputType=InputType.TYPE_CLASS_TEXT; setPadding(dp(8),dp(3),dp(8),dp(3)); setBackgroundColor(Color.WHITE); setText(data[selected].orEmpty()); setOnEditorActionListener { _,_,_ -> applyFormula(); true } }
         formulaBar.addView(formula,LinearLayout.LayoutParams(0,-2,1f))
         formulaBar.addView(TextView(this).apply { text="✓"; textSize=23f; setTextColor(Color.rgb(17,125,72)); setPadding(dp(10),dp(4),dp(10),dp(4)); setOnClickListener { applyFormula() } })
         root.addView(formulaBar)
@@ -232,8 +232,8 @@ class MainActivity : Activity() {
     }
     private fun findReplaceMenu() {
         val panel=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(8),dp(20),0) }
-        val find=EditText(this).apply { hint="Find text"; singleLine=true }
-        val replace=EditText(this).apply { hint="Replace with"; singleLine=true }
+        val find=EditText(this).apply { hint="Find text"; setSingleLine(true) }
+        val replace=EditText(this).apply { hint="Replace with"; setSingleLine(true) }
         panel.addView(find); panel.addView(replace)
         AlertDialog.Builder(this).setTitle("Find and replace in $sheetName").setView(panel)
             .setPositiveButton("Replace all") { _,_ ->
@@ -435,6 +435,10 @@ class MainActivity : Activity() {
         }
         render(); status.text="Sorted complete rows by $col; related row data kept together"
     }
+    private fun columnIndex(col:String):Int {
+        var n=0; col.uppercase(Locale.US).forEach { n=n*26+(it-'A'+1) }; return (n-1).coerceAtLeast(0)
+    }
+
     private fun display(address:String):String {
         val raw=data[address] ?: return ""
         val st = sheetStyles[address]

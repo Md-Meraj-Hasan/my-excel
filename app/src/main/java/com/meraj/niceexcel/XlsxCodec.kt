@@ -203,5 +203,5 @@ internal object XlsxCodec {
     private fun esc(s:String)=s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace("\"","&quot;").replace("'","&apos;")
     private fun normalizePath(path:String):String{val stack=mutableListOf<String>();path.split('/').forEach{part->when(part){"","."->Unit;".."->if(stack.isNotEmpty())stack.removeAt(stack.lastIndex);else->stack.add(part)}};return stack.joinToString("/")}
     private fun cellRow(s:String)=Regex("[A-Z]+([0-9]+)",RegexOption.IGNORE_CASE).matchEntire(s)?.groupValues?.get(1)?.toIntOrNull()?:0
-    private fun cellCol(s:String):Int{var n=0;s.takeWhile{it.isLetter()}.uppercase().forEach{n=n*26+(it-'A'+1)};return n}
+    private fun cellCol(s:String):Int{var n=0;s.takeWhile{it.isLetter()}.uppercase().forEach{n=n*26+it-'A'+1};return n}
 }
