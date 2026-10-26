@@ -611,7 +611,7 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
             "LOWER" -> textArg(args.getOrElse(0) { "\\\"\\\"" }).lowercase(Locale.US)
             "UPPER" -> textArg(args.getOrElse(0) { "\\\"\\\"" }).uppercase(Locale.US)
             "TRIM" -> textArg(args.getOrElse(0) { "\\\"\\\"" }).trim().replace(Regex("\\s+"), " ")
-            "PROPER" -> textArg(args.getOrElse(0) { "\\\"\\\"" }).lowercase(Locale.US).split(Regex("(\\\\s+)")).joinToString("") { part -> if (part.isBlank()) part else part.replaceFirstChar { it.titlecase(Locale.US) } }
+            "PROPER" -> Regex("\\b\\w").replace(textArg(args.getOrElse(0) { "\"\"" }).lowercase(Locale.US)) { match -> match.value.uppercase(Locale.US) }
             "SUBSTITUTE" -> {
                 val source = textArg(args.getOrElse(0) { "\"\"" })
                 val oldText = textArg(args.getOrElse(1) { "\"\"" })
