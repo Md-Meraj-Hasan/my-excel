@@ -24,6 +24,8 @@ class MainActivity : Activity() {
     private var tableHeaderRow: Int? = null
     private var sheetName = "Sheet1"
     private var selected = "A1"
+    private var lastTappedCell: String? = null
+    private var lastCellTapAt: Long = 0L
     private var undoState: Pair<String,String?>? = null
     private var redoState: Pair<String,String?>? = null
     private lateinit var grid: LinearLayout
@@ -169,18 +171,45 @@ class MainActivity : Activity() {
             gravity = st?.alignment ?: if(header||key==null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
             setBackgroundColor(when { header -> Color.rgb(228,235,240); key==selected -> Color.rgb(213,241,223); st != null -> st.fillColor; else -> Color.WHITE })
             if (st?.border == true) { background = android.graphics.drawable.GradientDrawable().apply { setColor(st.fillColor); setStroke(dp(if (st.thickBorder) 2 else 1), Color.rgb(70,80,88)) } }
-            setOnClickListener { if(key!=null) select(key) }
+            setOnClickListener {
+                if (key != null) {
+                    val now = System.currentTimeMillis()
+                    if (lastTappedCell == key && now - lastCellTapAt < 500L) {
+                        lastCellTapAt = 0L
+                        showCellEditor(key)
+                    } else {
+                        lastTappedCell = key
+                        lastCellTapAt = now
+                        select(key)
+                    }
+                }
+            }
             setOnLongClickListener {
-                if(key!=null) {
-                    val input=EditText(this@MainActivity).apply { setText(data[key].orEmpty()) }
-                    AlertDialog.Builder(this@MainActivity).setTitle("Edit $key").setView(input)
-                        .setPositiveButton("Apply") { _,_ -> putCell(key,input.text.toString()); select(key) }
-                        .setNegativeButton("Cancel",null).show()
-                }; true
+                if (key != null) showCellEditor(key)
+                true
             }
         }
         val lp=LinearLayout.LayoutParams(dp(width),dp(38)); lp.setMargins(0,0,dp(1),dp(1)); tv.layoutParams=lp
         return tv
+    }
+
+    private fun showCellEditor(address: String) {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setText(data[address].orEmpty())
+            setSelection(text.length)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Edit $address")
+            .setView(input)
+            .setPositiveButton("Apply") { _, _ ->
+                putCell(address, input.text.toString())
+                select(address)
+                status.text = "Updated $sheetName!$address"
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun renderTabs() {
