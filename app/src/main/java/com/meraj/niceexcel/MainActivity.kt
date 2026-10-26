@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.InputType
 import android.view.Gravity
 import android.view.inputmethod.InputMethodManager
@@ -24,8 +25,6 @@ class MainActivity : Activity() {
     private var tableHeaderRow: Int? = null
     private var sheetName = "Sheet1"
     private var selected = "A1"
-    private var lastTappedCell: String? = null
-    private var lastCellTapAt: Long = 0L
     private var undoState: Pair<String,String?>? = null
     private var redoState: Pair<String,String?>? = null
     private lateinit var grid: LinearLayout
@@ -35,6 +34,11 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var sheetTabs: LinearLayout
     private var pendingCsv = ""
+    private var selectedCellView: TextView? = null
+    private val cellViews = mutableMapOf<String, TextView>()
+    private var lastTapAddress: String? = null
+    private var lastTapAt = 0L
+    private var editingAddress: String? = null
 
     private val data get() = sheets.getOrPut(sheetName) { mutableMapOf() }
     private val sheetStyles get() = styles.getOrPut(sheetName) { mutableMapOf() }
@@ -116,6 +120,8 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
+        selectedCellView = null
+        cellViews.clear()
         grid.removeAllViews()
         val header=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
         header.addView(makeCell("",48,true,null))
@@ -169,47 +175,37 @@ class MainActivity : Activity() {
             typeface = Typeface.create(Typeface.DEFAULT, (if (st?.bold == true || header) Typeface.BOLD else Typeface.NORMAL) or (if (st?.italic == true) Typeface.ITALIC else Typeface.NORMAL))
             paint.isUnderlineText = st?.underline == true
             gravity = st?.alignment ?: if(header||key==null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
-            setBackgroundColor(when { header -> Color.rgb(228,235,240); key==selected -> Color.rgb(213,241,223); st != null -> st.fillColor; else -> Color.WHITE })
-            if (st?.border == true) { background = android.graphics.drawable.GradientDrawable().apply { setColor(st.fillColor); setStroke(dp(if (st.thickBorder) 2 else 1), Color.rgb(70,80,88)) } }
+            tag = key
+            applyCellBackground(this, key, header)
+            if (key != null) cellViews[key] = this
+            if (key == selected && key != null) selectedCellView = this
             setOnClickListener {
                 if (key != null) {
-                    val now = System.currentTimeMillis()
-                    if (lastTappedCell == key && now - lastCellTapAt < 500L) {
-                        lastCellTapAt = 0L
-                        showCellEditor(key)
+                    val now = SystemClock.elapsedRealtime()
+                    val isDoubleTap = lastTapAddress == key && now - lastTapAt <= 350L
+                    select(key)
+                    if (isDoubleTap) {
+                        lastTapAddress = null
+                        lastTapAt = 0L
+                        startInlineEdit(this)
                     } else {
-                        lastTappedCell = key
-                        lastCellTapAt = now
-                        select(key)
+                        lastTapAddress = key
+                        lastTapAt = now
                     }
                 }
             }
             setOnLongClickListener {
-                if (key != null) showCellEditor(key)
+                if (key != null) {
+                    lastTapAddress = null
+                    lastTapAt = 0L
+                    select(key)
+                    startInlineEdit(this)
+                }
                 true
             }
         }
         val lp=LinearLayout.LayoutParams(dp(width),dp(38)); lp.setMargins(0,0,dp(1),dp(1)); tv.layoutParams=lp
         return tv
-    }
-
-    private fun showCellEditor(address: String) {
-        val input = EditText(this).apply {
-            setSingleLine(true)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            setText(data[address].orEmpty())
-            setSelection(text.length)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Edit $address")
-            .setView(input)
-            .setPositiveButton("Apply") { _, _ ->
-                putCell(address, input.text.toString())
-                select(address)
-                status.text = "Updated $sheetName!$address"
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
     }
 
     private fun renderTabs() {
@@ -234,8 +230,85 @@ class MainActivity : Activity() {
         verticalScroll.post { verticalScroll.smoothScrollTo(0, grid.height) }
     }
 
+    private fun applyCellBackground(view: TextView, address: String?, header: Boolean) {
+        val st = if (address != null) sheetStyles[address] else null
+        when {
+            header -> view.setBackgroundColor(Color.rgb(228,235,240))
+            address == selected -> view.setBackgroundColor(Color.rgb(213,241,223))
+            st != null -> view.setBackgroundColor(st.fillColor)
+            else -> view.setBackgroundColor(Color.WHITE)
+        }
+        if (st?.border == true) {
+            view.background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(if (address == selected) Color.rgb(213,241,223) else st.fillColor)
+                setStroke(dp(if (st.thickBorder) 2 else 1), Color.rgb(70,80,88))
+            }
+        }
+    }
+
     private fun select(address:String) {
-        selected=address; cellName.text=address; formula.setText(data[address].orEmpty()); render()
+        if (selected != address) {
+            selectedCellView?.let { old -> applyCellBackground(old, old.tag as? String, false) }
+            selected = address
+            selectedCellView = cellViews[address]
+            selectedCellView?.let { applyCellBackground(it, address, false) }
+        }
+        cellName.text = address
+        if (editingAddress == null) formula.setText(data[address].orEmpty())
+    }
+
+    private fun startInlineEdit(cell: TextView) {
+        val address = cell.tag as? String ?: return
+        if (editingAddress != null) return
+        val parent = cell.parent as? LinearLayout ?: return
+        val index = parent.indexOfChild(cell)
+        if (index < 0) return
+        val params = cell.layoutParams
+        val editor = EditText(this).apply {
+            setSingleLine(true)
+            textSize = cell.textSize / resources.displayMetrics.scaledDensity
+            setText(data[address].orEmpty())
+            setSelection(text.length)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setPadding(dp(7), 0, dp(3), 0)
+            setBackgroundColor(Color.rgb(232, 250, 239))
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            minHeight = cell.height
+        }
+        editingAddress = address
+        parent.removeViewAt(index)
+        parent.addView(editor, index, params)
+        editor.requestFocus()
+        editor.post {
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT)
+        }
+        var finished = false
+        fun finish(save: Boolean) {
+            if (finished) return
+            finished = true
+            if (save) putCell(address, editor.text.toString())
+            editingAddress = null
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .hideSoftInputFromWindow(editor.windowToken, 0)
+            render()
+            select(address)
+            status.text = if (save) "Updated $sheetName!$address" else "Edit cancelled"
+        }
+        editor.setOnEditorActionListener { _, actionId, event ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE ||
+                (event != null && event.keyCode == android.view.KeyEvent.KEYCODE_ENTER && event.action == android.view.KeyEvent.ACTION_UP)) {
+                finish(true)
+                true
+            } else false
+        }
+        editor.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == android.view.KeyEvent.KEYCODE_ESCAPE && event.action == android.view.KeyEvent.ACTION_UP) {
+                finish(false)
+                true
+            } else false
+        }
+        editor.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) finish(true) }
     }
     private fun putCell(address:String,value:String) {
         undoState=address to data[address]
