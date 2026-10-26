@@ -435,10 +435,6 @@ class MainActivity : Activity() {
         }
         render(); status.text="Sorted complete rows by $col; related row data kept together"
     }
-    private fun columnIndex(col:String):Int {
-        var n=0; col.uppercase(Locale.US).forEach { n=n*26+(it-'A'+1) }; return (n-1).coerceAtLeast(0)
-    }
-
     private fun display(address:String):String {
         val raw=data[address] ?: return ""
         val st = sheetStyles[address]
