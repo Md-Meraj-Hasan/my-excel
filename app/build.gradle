@@ -2,6 +2,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    id 'com.chaquo.python'
 }
 
 android {
@@ -15,8 +16,8 @@ android {
 
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
 
-        versionCode 15
-        versionName '1.5.0'
+        versionCode 16
+        versionName '1.6.0'
     }
 
     compileOptions {
@@ -39,4 +40,19 @@ dependencies {
     // Android instrumentation tests
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     androidTestImplementation 'androidx.test:runner:1.6.2'
+}
+
+
+// Bundle Python + FastAPI for the optional offline Web Excel screen.
+chaquopy {
+    defaultConfig {
+        version = "3.11"
+        pip {
+            install "pydantic==1.10.21"
+            install "fastapi==0.115.12"
+            install "uvicorn==0.34.0"
+            install "openpyxl==3.1.5"
+            install "python-multipart==0.0.20"
+        }
+    }
 }

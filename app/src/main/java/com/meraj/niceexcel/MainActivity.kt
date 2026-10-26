@@ -68,10 +68,11 @@ class MainActivity : Activity() {
         root.addView(toolbar)
 
         val ribbon = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(5),dp(5),dp(5),dp(5)); setBackgroundColor(Color.WHITE) }
-        listOf("Home","Format","Table","Formula","Sort","Filter","Find").forEach { label ->
+        listOf("Home","Format","Table","Formula","Sort","Filter","Find","Web").forEach { label ->
             ribbon.addView(ribbonButton(label) {
                 when(label) {
                     "Formula" -> formulaHelp()
+                    "Web" -> startActivity(Intent(this, FastApiActivity::class.java))
                     "Sort" -> sortColumn()
                     "Filter" -> filterMenu()
                     "Find" -> findReplaceMenu()
