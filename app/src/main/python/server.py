@@ -90,6 +90,10 @@ def start_server(app_data_dir: str) -> None:
             lifespan="on",
         )
         server = uvicorn.Server(config)
+        # Chaquopy starts this function from a background Java thread. Uvicorn's
+        # default signal-handler installation is only valid on Python's main
+        # thread and can abort startup on Android, leaving WebView blank.
+        server.install_signal_handlers = lambda: None
         server.run()
         if not server.started:
             raise RuntimeError("Uvicorn stopped before the local server became ready")
