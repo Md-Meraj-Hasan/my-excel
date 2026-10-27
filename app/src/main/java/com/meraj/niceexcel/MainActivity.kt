@@ -292,12 +292,47 @@ class MainActivity : Activity() {
 
     private fun calculatedColumnWidth(column: Int): Int {
         val name = colName(column)
-        val longest = data.entries.asSequence()
-            .filter { it.key.startsWith(name) && it.key.drop(name.length).toIntOrNull() != null }
-            .map { display(it.key).length }
+        val longest = data.keys.asSequence()
+            .filter { address ->
+                val match = Regex("^([A-Z]+)(\\d+)$").matchEntire(address) ?: return@filter false
+                match.groupValues[1] == name && match.groupValues[2].toIntOrNull() !in wrappedRows
+            }
+            .map { display(it).length }
             .maxOrNull() ?: name.length
         // Three-character default; auto-expand by one character-space per extra character.
         return max(28, minOf(360, longest * 7 + 18))
+    }
+
+    /** Refresh only changed visible cells; rebuilding all 1,300+ views is reserved for layout changes. */
+    private fun refreshCellView(address: String) {
+        val view = cellViews[address] ?: return
+        view.text = display(address)
+        val st = sheetStyles[address]
+        view.textSize = st?.fontSize ?: 13f
+        view.typeface = Typeface.create(Typeface.DEFAULT,
+            (if (st?.bold == true) Typeface.BOLD else Typeface.NORMAL) or
+            (if (st?.italic == true) Typeface.ITALIC else Typeface.NORMAL))
+        view.paint.isUnderlineText = st?.underline == true
+        view.gravity = st?.alignment ?: (Gravity.CENTER_VERTICAL or Gravity.START)
+        view.maxLines = if (Regex("^[A-Z]+(\\d+)$").matchEntire(address)?.groupValues?.get(1)?.toIntOrNull() in wrappedRows) 2 else 1
+        view.setTextColor(st?.textColor ?: Color.rgb(24, 32, 39))
+        applyCellBackground(view, address, false)
+    }
+
+    private fun refreshCells(addresses: Collection<String>) {
+        addresses.forEach(::refreshCellView)
+    }
+
+    private fun refreshAfterCellChange(address: String) {
+        val column = Regex("^([A-Z]+)").find(address)?.groupValues?.get(1) ?: "A"
+        val index = columnIndex(column)
+        val currentWidth = cellViews[address]?.layoutParams?.width
+        val expectedWidth = dp(calculatedColumnWidth(index))
+        if (currentWidth != null && currentWidth != expectedWidth) {
+            render()
+        } else {
+            refreshCellView(address)
+        }
     }
 
     private fun makeCell(value:String,width:Int,header:Boolean,key:String?,cellHeight:Int = 24):TextView {
@@ -471,7 +506,8 @@ class MainActivity : Activity() {
             editingAddress = null
             (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                 .hideSoftInputFromWindow(editor.windowToken, 0)
-            render()
+            if (save) refreshAfterCellChange(address)
+            else refreshCellView(address)
             select(address)
             status.text = if (save) "Updated $sheetName!$address" else "Edit cancelled"
         }
@@ -502,7 +538,10 @@ class MainActivity : Activity() {
         if (value.isEmpty()) data.remove(address) else data[address]=value
     }
     private fun applyFormula() {
-        putCell(selected,formula.text.toString()); render(); status.text="Updated $sheetName!$selected"
+        val address = selected
+        putCell(address, formula.text.toString())
+        refreshAfterCellChange(address)
+        status.text="Updated $sheetName!$address"
         (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(formula.windowToken,0)
     }
     private fun undo() {
@@ -510,14 +549,14 @@ class MainActivity : Activity() {
         if(u==null) { status.text="Nothing to undo"; return }
         redoState=u.first to data[u.first]
         if(u.second==null) data.remove(u.first) else data[u.first]=u.second!!
-        undoState=null; render(); formula.setText(data[selected].orEmpty()); status.text="Undo complete"
+        undoState=null; refreshAfterCellChange(u.first); formula.setText(data[selected].orEmpty()); status.text="Undo complete"
     }
     private fun redo() {
         val r=redoState
         if(r==null) { status.text="Nothing to redo"; return }
         undoState=r.first to data[r.first]
         if(r.second==null) data.remove(r.first) else data[r.first]=r.second!!
-        redoState=null; render(); formula.setText(data[selected].orEmpty()); status.text="Redo complete"
+        redoState=null; refreshAfterCellChange(r.first); formula.setText(data[selected].orEmpty()); status.text="Redo complete"
     }
     private fun findReplaceMenu() {
         val panel=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(8),dp(20),0) }
@@ -642,24 +681,24 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("Range $rangeLabel · ${cells.size} cells")
             .setItems(actions) { _, which ->
                 when (which) {
-                    0 -> chooseColor("Text color for $rangeLabel") { color -> cells.forEach { styleFor(it).textColor = color }; render(); status.text = "Text color applied to $rangeLabel" }
-                    1 -> chooseColor("Cell fill for $rangeLabel") { color -> cells.forEach { styleFor(it).fillColor = color }; render(); status.text = "Cell fill applied to $rangeLabel" }
+                    0 -> chooseColor("Text color for $rangeLabel") { color -> cells.forEach { styleFor(it).textColor = color }; refreshCells(cells); status.text = "Text color applied to $rangeLabel" }
+                    1 -> chooseColor("Cell fill for $rangeLabel") { color -> cells.forEach { styleFor(it).fillColor = color }; refreshCells(cells); status.text = "Cell fill applied to $rangeLabel" }
                     2 -> {
                         val options = arrayOf("Left", "Center", "Right")
                         AlertDialog.Builder(this).setTitle("Alignment for $rangeLabel").setItems(options) { _, index ->
                             val gravity = when (index) { 1 -> Gravity.CENTER; 2 -> Gravity.CENTER_VERTICAL or Gravity.END; else -> Gravity.CENTER_VERTICAL or Gravity.START }
                             cells.forEach { styleFor(it).alignment = gravity }
-                            render(); status.text = "Alignment applied to $rangeLabel"
+                            refreshCells(cells); status.text = "Alignment applied to $rangeLabel"
                         }.show()
                     }
-                    3 -> { cells.forEach { styleFor(it).bold = !styleFor(it).bold }; render(); status.text = "Bold toggled for $rangeLabel" }
-                    4 -> { cells.forEach { styleFor(it).italic = !styleFor(it).italic }; render(); status.text = "Italic toggled for $rangeLabel" }
-                    5 -> { cells.forEach { styleFor(it).underline = !styleFor(it).underline }; render(); status.text = "Underline toggled for $rangeLabel" }
+                    3 -> { cells.forEach { styleFor(it).bold = !styleFor(it).bold }; refreshCells(cells); status.text = "Bold toggled for $rangeLabel" }
+                    4 -> { cells.forEach { styleFor(it).italic = !styleFor(it).italic }; refreshCells(cells); status.text = "Italic toggled for $rangeLabel" }
+                    5 -> { cells.forEach { styleFor(it).underline = !styleFor(it).underline }; refreshCells(cells); status.text = "Underline toggled for $rangeLabel" }
                     6 -> chooseRangeFontSize(rangeLabel, cells)
                     7 -> chooseRangeNumberFormat(rangeLabel, cells)
-                    8 -> { cells.forEach { styleFor(it).border = !styleFor(it).border }; render(); status.text = "Borders toggled for $rangeLabel" }
-                    9 -> { cells.forEach { sheetStyles.remove(it) }; render(); status.text = "Formatting cleared for $rangeLabel" }
-                    10 -> { cells.forEach { data.remove(it) }; if (selected in cells) formula.setText(""); render(); status.text = "Contents cleared for $rangeLabel" }
+                    8 -> { cells.forEach { styleFor(it).border = !styleFor(it).border }; refreshCells(cells); status.text = "Borders toggled for $rangeLabel" }
+                    9 -> { cells.forEach { sheetStyles.remove(it) }; refreshCells(cells); status.text = "Formatting cleared for $rangeLabel" }
+                    10 -> { cells.forEach { data.remove(it) }; if (selected in cells) formula.setText(""); refreshCells(cells); status.text = "Contents cleared for $rangeLabel" }
                 }
             }.show()
     }
@@ -670,7 +709,7 @@ class MainActivity : Activity() {
             .setPositiveButton("Apply") { _, _ ->
                 val size = input.text.toString().toFloatOrNull()?.coerceIn(8f, 32f)
                 if (size != null) cells.forEach { styleFor(it).fontSize = size }
-                render(); status.text = "Font size applied to $rangeLabel"
+                refreshCells(cells); status.text = "Font size applied to $rangeLabel"
             }.setNegativeButton("Cancel", null).show()
     }
 
@@ -678,7 +717,7 @@ class MainActivity : Activity() {
         val opts = arrayOf("General", "Number (2 decimals)", "Percentage", "Currency", "Date (text display)")
         AlertDialog.Builder(this).setTitle("Number format for $rangeLabel").setItems(opts) { _, index ->
             cells.forEach { styleFor(it).numberFormat = opts[index] }
-            render(); status.text = "Number format applied to $rangeLabel"
+            refreshCells(cells); status.text = "Number format applied to $rangeLabel"
         }.show()
     }
 
@@ -691,7 +730,7 @@ class MainActivity : Activity() {
         )
         AlertDialog.Builder(this).setTitle("Format $targetLabel").setItems(options) { _, which ->
             val targets = if (rangeCells.isNotEmpty()) rangeCells else listOf(selected)
-            fun refresh(message: String) { render(); status.text = "$message: $targetLabel" }
+            fun refresh(message: String) { refreshCells(targets); status.text = "$message: $targetLabel" }
             when (which) {
                 0 -> { targets.forEach { styleFor(it).bold = !styleFor(it).bold }; refresh("Bold updated") }
                 1 -> { targets.forEach { styleFor(it).italic = !styleFor(it).italic }; refresh("Italic updated") }
@@ -703,7 +742,7 @@ class MainActivity : Activity() {
                 7 -> if (rangeCells.isNotEmpty()) chooseRangeNumberFormat(targetLabel, targets) else chooseNumberFormat()
                 8 -> { targets.forEach { styleFor(it).border = !styleFor(it).border }; refresh("Borders updated") }
                 9 -> { targets.forEach { sheetStyles.remove(it) }; refresh("Formatting cleared") }
-                10 -> { if (rangeCells.isNotEmpty()) { targets.forEach { data.remove(it) }; formula.setText(""); refresh("Contents cleared") } else { putCell(selected, ""); formula.setText(""); render(); status.text = "Cell cleared: $selected" } }
+                10 -> { if (rangeCells.isNotEmpty()) { targets.forEach { data.remove(it) }; formula.setText(""); refresh("Contents cleared") } else { putCell(selected, ""); formula.setText(""); refreshAfterCellChange(selected); status.text = "Cell cleared: $selected" } }
                 11 -> findReplaceMenu()
             }
         }.show()
@@ -714,14 +753,14 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("Alignment for $label").setItems(opts) { _, index ->
             val alignment = when (index) { 1 -> Gravity.CENTER; 2 -> Gravity.CENTER_VERTICAL or Gravity.END; else -> Gravity.CENTER_VERTICAL or Gravity.START }
             targets.forEach { styleFor(it).alignment = alignment }
-            render(); status.text = "Alignment applied to $label"
+            refreshCells(targets); status.text = "Alignment applied to $label"
         }.show()
     }
 
     private fun chooseFontSize() {
         val input = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(styleFor(selected).fontSize.toInt().toString()); hint = "8–32" }
         AlertDialog.Builder(this).setTitle("Font size").setView(input)
-            .setPositiveButton("Apply") { _, _ -> input.text.toString().toFloatOrNull()?.let { styleFor(selected).fontSize = it.coerceIn(8f, 32f) }; render() }
+            .setPositiveButton("Apply") { _, _ -> input.text.toString().toFloatOrNull()?.let { styleFor(selected).fontSize = it.coerceIn(8f, 32f) }; refreshCellView(selected) }
             .setNegativeButton("Cancel", null).show()
     }
 
@@ -742,13 +781,14 @@ class MainActivity : Activity() {
             AlertDialog.Builder(this)
                 .setTitle("Apply alignment to")
                 .setItems(arrayOf("Selected cell only", "Entire column")) { _, scope ->
+                    val col = Regex("^([A-Z]+)").find(selected)?.groupValues?.get(1) ?: "A"
                     if (scope == 0) {
                         styleFor(selected).alignment = alignment
                     } else {
-                        val col = Regex("^([A-Z]+)").find(selected)?.groupValues?.get(1) ?: "A"
                         for (row in 1..rowCount) styleFor("$col$row").alignment = alignment
                     }
-                    render()
+                    val targets = if (scope == 0) listOf(selected) else (1..rowCount).map { row -> "$col$row" }
+                    refreshCells(targets)
                     status.text = if (scope == 0) "Alignment applied to $selected" else "Alignment applied to column ${Regex("^([A-Z]+)").find(selected)?.groupValues?.get(1) ?: "A"}"
                 }.show()
         }.show()
@@ -758,7 +798,7 @@ class MainActivity : Activity() {
         val opts = arrayOf("General", "Number (2 decimals)", "Percentage", "Currency", "Date (text display)")
         AlertDialog.Builder(this).setTitle("Number format").setItems(opts) { _, i ->
             styleFor(selected).numberFormat = opts[i]
-            render(); status.text = "Number format set: ${opts[i]}"
+            refreshCellView(selected); status.text = "Number format set: ${opts[i]}"
         }.show()
     }
 
@@ -951,8 +991,23 @@ class MainActivity : Activity() {
                 contentResolver.openOutputStream(intent.data!!)?.use { it.write(pendingCsv.toByteArray(Charsets.UTF_8)) }
                 status.text="CSV saved"
             } else if(requestCode==13) {
-                contentResolver.openOutputStream(intent.data!!)?.use { XlsxCodec.write(it, sheets, styles) }
-                status.text="Excel workbook (.xlsx) saved"
+                val targetUri = intent.data!!
+                // Snapshot lightweight maps on the UI thread, then perform ZIP/XML work off the UI thread.
+                val sheetsSnapshot = sheets.mapValues { LinkedHashMap(it.value) }
+                val stylesSnapshot = styles.mapValues { (_, sheetStyles) ->
+                    LinkedHashMap(sheetStyles.mapValues { (_, style) -> style.copy() })
+                }
+                status.text = "Saving workbook…"
+                Thread {
+                    val result = runCatching {
+                        contentResolver.openOutputStream(targetUri)?.use { XlsxCodec.write(it, sheetsSnapshot, stylesSnapshot) }
+                            ?: error("Could not open destination for saving")
+                    }
+                    runOnUiThread {
+                        status.text = if (result.isSuccess) "Excel workbook (.xlsx) saved" else "Save failed: ${result.exceptionOrNull()?.message ?: "unknown error"}"
+                        if (result.isFailure) Toast.makeText(this, status.text, Toast.LENGTH_LONG).show()
+                    }
+                }.start()
             } else if(requestCode==12) {
                 val text=contentResolver.openInputStream(intent.data!!)?.bufferedReader()?.use { it.readText() }.orEmpty()
                 data.clear(); sheetStyles.clear()
