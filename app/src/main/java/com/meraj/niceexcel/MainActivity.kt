@@ -66,32 +66,27 @@ class MainActivity : Activity() {
 
     private fun buildUi() {
         val root = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(245,247,249)) }
-        val toolbar = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(12),dp(8),dp(6),dp(8)); setBackgroundColor(Color.rgb(17,94,57)) }
-        toolbar.addView(TextView(this).apply { text="Nice Excel"; textSize=21f; typeface=Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE) }, LinearLayout.LayoutParams(0,-2,1f))
-        toolbar.addView(tool("＋") { addSheet() })
-        toolbar.addView(tool("↶") { undo() })
-        toolbar.addView(tool("↷") { redo() })
-        toolbar.addView(tool("Open") { openMenu() })
-        toolbar.addView(tool("Save") { saveMenu() })
-        root.addView(toolbar)
-
-        val ribbon = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(5),dp(5),dp(5),dp(5)); setBackgroundColor(Color.WHITE) }
-        listOf("Home","Range","Format","Table","Formula","Sort","Filter","Find","Web").forEach { label ->
-            ribbon.addView(ribbonButton(label) {
-                when(label) {
-                    "Formula" -> formulaHelp()
-                    "Range" -> rangeToolsMenu()
-                    "Web" -> startActivity(Intent(this, FastApiActivity::class.java))
-                    "Sort" -> sortColumn()
-                    "Filter" -> filterMenu()
-                    "Find" -> findReplaceMenu()
-                    "Table" -> tableMenu()
-                    "Format" -> formattingMenu()
-                    else -> formattingMenu()
-                }
-            }, LinearLayout.LayoutParams(0,dp(38),1f))
+        // Compact spreadsheet-style menu bar replaces the large app title.
+        val menuScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            setBackgroundColor(Color.rgb(17, 94, 57))
         }
-        root.addView(ribbon)
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(5), dp(4), dp(5))
+            setBackgroundColor(Color.rgb(17, 94, 57))
+        }
+        listOf("File", "Home", "Insert", "Format", "Data", "Formula", "View").forEach { label ->
+            val button = tool(label) { showTopMenu(label) }.apply {
+                textSize = 13f
+                setPadding(dp(11), dp(9), dp(11), dp(9))
+                setBackgroundColor(Color.rgb(17, 94, 57))
+            }
+            toolbar.addView(button, LinearLayout.LayoutParams(-2, -2))
+        }
+        menuScroll.addView(toolbar)
+        root.addView(menuScroll)
 
         val formulaBar=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(6),dp(4),dp(6),dp(4)); setBackgroundColor(Color.rgb(255,255,255)) }
         cellName=TextView(this).apply { text=selected; textSize=14f; typeface=Typeface.DEFAULT_BOLD; gravity=Gravity.CENTER; setTextColor(Color.rgb(17,94,57)); setPadding(dp(10),dp(11),dp(10),dp(11)); setBackgroundColor(Color.rgb(225,242,232)) }
@@ -115,6 +110,87 @@ class MainActivity : Activity() {
         render()
     }
 
+    private fun showTopMenu(section: String) {
+        val items: List<Pair<String, () -> Unit>> = when (section) {
+            "File" -> listOf(
+                "New workbook" to { newWorkbook() },
+                "Open workbook…" to { openMenu() },
+                "Save" to { saveMenu() },
+                "Save As…" to { saveMenu() },
+                "Export CSV…" to { saveCsv() }
+            )
+            "Home" -> listOf(
+                "Undo" to { undo() }, "Redo" to { redo() },
+                "Cell formatting…" to { formattingMenu() },
+                "Find / Replace…" to { findReplaceMenu() }
+            )
+            "Insert" -> listOf(
+                "Add row" to { addOneRow() }, "Add worksheet" to { addSheet() },
+                "Table tools…" to { tableMenu() }
+            )
+            "Format" -> listOf(
+                "Format cells…" to { formattingMenu() },
+                "Range formatting…" to { rangeToolsMenu() },
+                "Table styles…" to { tableMenu() }
+            )
+            "Data" -> listOf(
+                "Sort column…" to { sortColumn() },
+                "Filter column…" to { filterMenu() },
+                "Find / Replace…" to { findReplaceMenu() }
+            )
+            "Formula" -> listOf("Formula help" to { formulaHelp() })
+            else -> listOf(
+                "Web Engine" to { startActivity(Intent(this, FastApiActivity::class.java)) },
+                "Workbook info" to { status.text = "${sheets.size} sheet(s) • $rowCount rows • Offline workbook" }
+            )
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setBackgroundColor(Color.rgb(245, 249, 246))
+        }
+        val title = TextView(this).apply {
+            text = section
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            setBackgroundColor(Color.rgb(17, 94, 57))
+        }
+        panel.addView(title)
+        val dialog = AlertDialog.Builder(this).setView(panel).setNegativeButton("Close", null).create()
+        items.forEachIndexed { index, item ->
+            val row = TextView(this).apply {
+                text = item.first
+                textSize = 15f
+                gravity = Gravity.CENTER_VERTICAL
+                setTextColor(Color.rgb(35, 70, 50))
+                setPadding(dp(14), dp(11), dp(14), dp(11))
+                setBackgroundColor(if (index % 2 == 0) Color.WHITE else Color.rgb(231, 240, 234))
+                setOnClickListener { dialog.dismiss(); item.second.invoke() }
+            }
+            panel.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
+        }
+        dialog.show()
+    }
+
+    private fun newWorkbook() {
+        AlertDialog.Builder(this)
+            .setTitle("New workbook")
+            .setMessage("Create a blank workbook? Current unsaved changes will be cleared.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Create") { _, _ ->
+                sheets.clear(); styles.clear()
+                sheetName = "Sheet1"; selected = "A1"; rowCount = 50
+                sheets["Sheet1"] = mutableMapOf(); styles["Sheet1"] = mutableMapOf()
+                sheets["Sheet2"] = mutableMapOf(); styles["Sheet2"] = mutableMapOf()
+                sheets["Sheet3"] = mutableMapOf(); styles["Sheet3"] = mutableMapOf()
+                selectedRangeCells = emptyList(); selectedRangeLabel = null
+                render(); cellName.text = selected; formula.setText("")
+                status.text = "New blank workbook"
+            }.show()
+    }
+
     private fun tool(label:String, action:()->Unit)=TextView(this).apply {
         text=label; textSize=14f; gravity=Gravity.CENTER; setTextColor(Color.WHITE); setPadding(dp(9),dp(9),dp(9),dp(9)); setOnClickListener { action() }
     }
@@ -129,7 +205,7 @@ class MainActivity : Activity() {
         val header=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
         header.addView(makeCell("",48,true,null))
         val longestByColumn = IntArray(colLimit) { c -> colName(c).length }
-        data.forEach { (address, rawValue) ->
+        data.keys.forEach { address ->
             val match = Regex("^([A-Z]+)(\\d+)$").matchEntire(address) ?: return@forEach
             val column = columnIndex(match.groupValues[1])
             if (column in 0 until colLimit) {
@@ -137,7 +213,10 @@ class MainActivity : Activity() {
                 if (shownLength > longestByColumn[column]) longestByColumn[column] = shownLength
             }
         }
-        val columnWidths = longestByColumn.map { longest -> max(104, minOf(320, 22 + longest * 9)) }
+        // Start compact; grow only by approximately one character width per extra character.
+        val columnWidths = longestByColumn.map { longest ->
+            max(92, minOf(260, 92 + max(0, longest - 12) * 7))
+        }
         for(c in 0 until colLimit) {
             val headerCell = makeCell(colName(c),columnWidths[c],true,null)
             headerCell.setOnClickListener { selectColumn(c) }
@@ -154,11 +233,14 @@ class MainActivity : Activity() {
             val rowHeight = (0 until colLimit).maxOfOrNull { c ->
                 val address = "${colName(c)}$r"
                 val text = display(address)
-                val charsPerLine = max(1, (columnWidths[c] - 8) / 7)
+                val charsPerLine = max(1, (columnWidths[c] - 2) / 7)
                 val lines = max(1, (text.length + charsPerLine - 1) / charsPerLine)
-                lines * 18 + 4
-            }?.coerceAtLeast(32) ?: 32
-            line.addView(makeCell(r.toString(),48,true,null,rowHeight))
+                // Compact rows: keep the existing 13sp text size, but remove excess vertical space.
+                lines * 14 + 1
+            }?.coerceAtLeast(18) ?: 18
+            val rowHeader = makeCell(r.toString(), 48, true, null, rowHeight)
+            rowHeader.setOnClickListener { selectRow(r) }
+            line.addView(rowHeader)
             for(c in 0 until colLimit) {
                 val a="${colName(c)}$r"
                 line.addView(makeCell(display(a),columnWidths[c],false,a,rowHeight))
@@ -196,12 +278,11 @@ class MainActivity : Activity() {
             .filter { it.key.startsWith(name) && it.key.drop(name.length).toIntOrNull() != null }
             .map { display(it.key).length }
             .maxOrNull() ?: name.length
-        // Keep the familiar default width, but expand columns for longer text.
-        // Cap the width so a very long value does not swallow the entire sheet.
-        return max(104, minOf(320, 22 + longest * 9))
+        // Compact default width; each additional character adds only one character-space.
+        return max(92, minOf(260, 92 + max(0, longest - 12) * 7))
     }
 
-    private fun makeCell(value:String,width:Int,header:Boolean,key:String?,cellHeight:Int = 32):TextView {
+    private fun makeCell(value:String,width:Int,header:Boolean,key:String?,cellHeight:Int = 24):TextView {
         val tv=TextView(this).apply {
             text=value; textSize=13f; gravity=if(header||key==null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
             setSingleLine(false)
@@ -307,6 +388,16 @@ class MainActivity : Activity() {
         status.text = "Selected entire column $col · ${selectedRangeCells.size} cells. Open Format or Range to apply changes."
     }
 
+    private fun selectRow(row: Int) {
+        selectedRangeLabel = "$row:$row"
+        selectedRangeCells = (0 until colLimit).map { "${colName(it)}$row" }
+        selected = "A$row"
+        cellName.text = selectedRangeLabel
+        formula.setText("")
+        render()
+        status.text = "Selected entire row $row · ${selectedRangeCells.size} cells. Open Format or Range to apply changes."
+    }
+
     private fun select(address:String) {
         val previousRange = selectedRangeCells
         val previousRangeLabel = selectedRangeLabel
@@ -342,7 +433,7 @@ class MainActivity : Activity() {
             setPadding(dp(7), 0, dp(3), 0)
             setBackgroundColor(Color.rgb(232, 250, 239))
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
-            minHeight = dp(32)
+            minHeight = dp(18)
         }
         editingAddress = address
         parent.removeViewAt(index)
