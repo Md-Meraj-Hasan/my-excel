@@ -26,6 +26,7 @@ class MainActivity : Activity() {
     private var sheetName = "Sheet1"
     private var selected = "A1"
     private var activeTopSection = "Home"
+    private var ribbonToolsVisible = false
     private var undoState: Pair<String,String?>? = null
     private var redoState: Pair<String,String?>? = null
     private lateinit var grid: LinearLayout
@@ -34,6 +35,7 @@ class MainActivity : Activity() {
     private lateinit var formula: EditText
     private lateinit var status: TextView
     private lateinit var sheetTabs: LinearLayout
+    private lateinit var ribbonTools: LinearLayout
     private var pendingCsv = ""
     private var selectedCellView: TextView? = null
     private val cellViews = mutableMapOf<String, TextView>()
@@ -91,21 +93,48 @@ class MainActivity : Activity() {
                 setTextColor(if (label == activeTopSection) Color.rgb(6, 78, 59) else Color.WHITE)
                 if (label == activeTopSection) typeface = Typeface.DEFAULT_BOLD
                 setOnClickListener {
-                    activeTopSection = label
-                    for (i in 0 until toolbar.childCount) {
-                        val tab = toolbar.getChildAt(i) as? TextView ?: continue
-                        val active = tab.text.toString() == activeTopSection
-                        tab.setBackgroundColor(if (active) Color.rgb(209, 250, 229) else Color.rgb(17, 94, 57))
-                        tab.setTextColor(if (active) Color.rgb(6, 78, 59) else Color.WHITE)
-                        tab.typeface = if (active) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                    val sameSection = label == activeTopSection
+                    if (sameSection && ribbonToolsVisible) {
+                        ribbonTools.visibility = android.view.View.GONE
+                        (ribbonTools.parent as? android.view.View)?.visibility = android.view.View.GONE
+                        ribbonToolsVisible = false
+                    } else {
+                        activeTopSection = label
+                        for (i in 0 until toolbar.childCount) {
+                            val tab = toolbar.getChildAt(i) as? TextView ?: continue
+                            val active = tab.text.toString() == activeTopSection
+                            tab.setBackgroundColor(if (active) Color.rgb(209, 250, 229) else Color.rgb(17, 94, 57))
+                            tab.setTextColor(if (active) Color.rgb(6, 78, 59) else Color.WHITE)
+                            tab.typeface = if (active) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                        }
+                        showTopMenu(label)
+                        (ribbonTools.parent as? android.view.View)?.visibility = android.view.View.VISIBLE
+                        ribbonTools.visibility = android.view.View.VISIBLE
+                        ribbonToolsVisible = true
                     }
-                    showTopMenu(label)
                 }
             }
             toolbar.addView(button, LinearLayout.LayoutParams(-2, -2))
         }
         menuScroll.addView(toolbar)
         root.addView(menuScroll)
+
+        // The active section's tools stay in a slim horizontal row directly below the tabs.
+        // This is part of the screen layout, not a dialog, so touching cells won't dismiss it.
+        val toolScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            setFillViewport(false)
+            setBackgroundColor(Color.rgb(239, 246, 241))
+        }
+        ribbonTools = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(5), dp(2), dp(5), dp(2))
+            setBackgroundColor(Color.rgb(239, 246, 241))
+        }
+        toolScroll.addView(ribbonTools, HorizontalScrollView.LayoutParams(-2, dp(34)))
+        root.addView(toolScroll, LinearLayout.LayoutParams(-1, dp(36)))
+        toolScroll.visibility = android.view.View.GONE
 
         val formulaBar=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(6),dp(4),dp(6),dp(4)); setBackgroundColor(Color.rgb(255,255,255)) }
         cellName=TextView(this).apply { text=selected; textSize=14f; typeface=Typeface.DEFAULT_BOLD; gravity=Gravity.CENTER; setTextColor(Color.rgb(17,94,57)); setPadding(dp(10),dp(11),dp(10),dp(11)); setBackgroundColor(Color.rgb(225,242,232)) }
@@ -164,31 +193,7 @@ class MainActivity : Activity() {
                 "Workbook info" to { status.text = "${sheets.size} sheet(s) • $rowCount rows • Offline workbook" }
             )
         }
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            setBackgroundColor(Color.rgb(245, 249, 246))
-        }
-        val title = TextView(this).apply {
-            text = section
-            textSize = 17f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-            setBackgroundColor(Color.rgb(17, 94, 57))
-        }
-        panel.addView(title)
-        val dialog = AlertDialog.Builder(this).setView(panel).setNegativeButton("Close", null).create()
-        // Excel-style compact horizontal tool strip: one row of tools for the selected section.
-        val toolScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            setFillViewport(false)
-        }
-        val toolRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(3), 0, dp(3))
-        }
+        ribbonTools.removeAllViews()
         val compactLabels = mapOf(
             "New workbook" to "＋ New", "Open workbook…" to "Open", "Save" to "Save", "Save As…" to "Save As",
             "Export CSV…" to "CSV", "Undo" to "↶ Undo", "Redo" to "↷ Redo", "Cell formatting…" to "Format",
@@ -202,20 +207,18 @@ class MainActivity : Activity() {
             val button = TextView(this).apply {
                 text = label
                 contentDescription = item.first
-                textSize = 12f
+                textSize = 11f
                 gravity = Gravity.CENTER
+                maxLines = 1
                 setTextColor(Color.rgb(35, 70, 50))
-                setPadding(dp(10), dp(10), dp(10), dp(10))
-                setBackgroundColor(Color.WHITE)
-                setOnClickListener { dialog.dismiss(); item.second.invoke() }
+                setPadding(dp(7), dp(3), dp(7), dp(3))
+                setBackgroundColor(Color.TRANSPARENT)
+                setOnClickListener { item.second.invoke() }
             }
-            toolRow.addView(button, LinearLayout.LayoutParams(-2, dp(42)).apply {
-                marginEnd = dp(5)
+            ribbonTools.addView(button, LinearLayout.LayoutParams(-2, dp(30)).apply {
+                marginEnd = dp(3)
             })
         }
-        toolScroll.addView(toolRow)
-        panel.addView(toolScroll, LinearLayout.LayoutParams(-1, -2))
-        dialog.show()
     }
 
     private fun selectedRowTextModeMenu() {
@@ -741,53 +744,91 @@ class MainActivity : Activity() {
         return buildList { for (r in r1..r2) for (c in c1..c2) add("${colName(c)}$r") }
     }
 
-    private fun showRangeActions(rangeLabel: String, cells: List<String>) {
+    private fun showRangeActions(
+        rangeLabel: String,
+        cells: List<String>,
+        pendingStyles: MutableMap<String, CellStyle> = cells.associateWith { styleFor(it).copy() }.toMutableMap()
+    ) {
         val actions = arrayOf(
             "Text color", "Cell fill color", "Text alignment", "Bold on/off",
             "Italic on/off", "Underline on/off", "Font size", "Number format",
-            "Cell borders on/off", "Clear formatting", "Clear cell contents"
+            "Cell borders on/off", "Clear formatting", "Clear cell contents now"
         )
-        AlertDialog.Builder(this).setTitle("Range $rangeLabel · ${cells.size} cells")
+        AlertDialog.Builder(this)
+            .setTitle("Range $rangeLabel · ${cells.size} cells")
             .setItems(actions) { _, which ->
+                fun continueEditing(message: String) {
+                    status.text = "$message · Pending changes for $rangeLabel (tap Apply to commit)"
+                    showRangeActions(rangeLabel, cells, pendingStyles)
+                }
                 when (which) {
-                    0 -> chooseColor("Text color for $rangeLabel") { color -> cells.forEach { styleFor(it).textColor = color }; render(); status.text = "Text color applied to $rangeLabel" }
-                    1 -> chooseColor("Cell fill for $rangeLabel") { color -> cells.forEach { styleFor(it).fillColor = color }; render(); status.text = "Cell fill applied to $rangeLabel" }
+                    0 -> chooseColor("Text color for $rangeLabel") { color ->
+                        cells.forEach { pendingStyles.getValue(it).textColor = color }
+                        continueEditing("Text color selected")
+                    }
+                    1 -> chooseColor("Cell fill for $rangeLabel") { color ->
+                        cells.forEach { pendingStyles.getValue(it).fillColor = color }
+                        continueEditing("Cell fill selected")
+                    }
                     2 -> {
                         val options = arrayOf("Left", "Center", "Right")
                         AlertDialog.Builder(this).setTitle("Alignment for $rangeLabel").setItems(options) { _, index ->
                             val gravity = when (index) { 1 -> Gravity.CENTER; 2 -> Gravity.CENTER_VERTICAL or Gravity.END; else -> Gravity.CENTER_VERTICAL or Gravity.START }
-                            cells.forEach { styleFor(it).alignment = gravity }
-                            render(); status.text = "Alignment applied to $rangeLabel"
-                        }.show()
+                            cells.forEach { pendingStyles.getValue(it).alignment = gravity }
+                            continueEditing("Alignment selected")
+                        }.setNegativeButton("Cancel", null).show()
                     }
-                    3 -> { cells.forEach { styleFor(it).bold = !styleFor(it).bold }; render(); status.text = "Bold toggled for $rangeLabel" }
-                    4 -> { cells.forEach { styleFor(it).italic = !styleFor(it).italic }; render(); status.text = "Italic toggled for $rangeLabel" }
-                    5 -> { cells.forEach { styleFor(it).underline = !styleFor(it).underline }; render(); status.text = "Underline toggled for $rangeLabel" }
-                    6 -> chooseRangeFontSize(rangeLabel, cells)
-                    7 -> chooseRangeNumberFormat(rangeLabel, cells)
-                    8 -> { cells.forEach { styleFor(it).border = !styleFor(it).border }; render(); status.text = "Borders toggled for $rangeLabel" }
-                    9 -> { cells.forEach { sheetStyles.remove(it) }; render(); status.text = "Formatting cleared for $rangeLabel" }
-                    10 -> { cells.forEach { data.remove(it) }; if (selected in cells) formula.setText(""); render(); status.text = "Contents cleared for $rangeLabel" }
+                    3 -> { cells.forEach { val st = pendingStyles.getValue(it); st.bold = !st.bold }; continueEditing("Bold toggled") }
+                    4 -> { cells.forEach { val st = pendingStyles.getValue(it); st.italic = !st.italic }; continueEditing("Italic toggled") }
+                    5 -> { cells.forEach { val st = pendingStyles.getValue(it); st.underline = !st.underline }; continueEditing("Underline toggled") }
+                    6 -> {
+                        val input = EditText(this).apply {
+                            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                            setText(pendingStyles[cells.first()]?.fontSize?.toInt()?.toString() ?: "13")
+                            hint = "8–32"
+                        }
+                        AlertDialog.Builder(this).setTitle("Font size for $rangeLabel").setView(input)
+                            .setPositiveButton("Set") { _, _ ->
+                                val size = input.text.toString().toFloatOrNull()?.coerceIn(8f, 32f)
+                                if (size != null) {
+                                    cells.forEach { pendingStyles.getValue(it).fontSize = size }
+                                    continueEditing("Font size selected")
+                                } else {
+                                    Toast.makeText(this, "Enter a font size from 8 to 32", Toast.LENGTH_SHORT).show()
+                                    showRangeActions(rangeLabel, cells, pendingStyles)
+                                }
+                            }.setNegativeButton("Cancel") { _, _ -> showRangeActions(rangeLabel, cells, pendingStyles) }.show()
+                    }
+                    7 -> {
+                        val opts = arrayOf("General", "Number (2 decimals)", "Percentage", "Currency", "Date (text display)")
+                        AlertDialog.Builder(this).setTitle("Number format for $rangeLabel").setItems(opts) { _, index ->
+                            cells.forEach { pendingStyles.getValue(it).numberFormat = opts[index] }
+                            continueEditing("Number format selected")
+                        }.setNegativeButton("Cancel") { _, _ -> showRangeActions(rangeLabel, cells, pendingStyles) }.show()
+                    }
+                    8 -> { cells.forEach { val st = pendingStyles.getValue(it); st.border = !st.border }; continueEditing("Borders toggled") }
+                    9 -> { cells.forEach { pendingStyles[it] = CellStyle() }; continueEditing("Clear formatting selected") }
+                    10 -> {
+                        // Content clearing is intentionally immediate; only format changes are staged.
+                        cells.forEach { data.remove(it) }
+                        if (selected in cells) formula.setText("")
+                        render()
+                        status.text = "Contents cleared for $rangeLabel"
+                    }
                 }
-            }.show()
-    }
-
-    private fun chooseRangeFontSize(rangeLabel: String, cells: List<String>) {
-        val input = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(styleFor(selected).fontSize.toInt().toString()); hint = "8–32" }
-        AlertDialog.Builder(this).setTitle("Font size for $rangeLabel").setView(input)
+            }
             .setPositiveButton("Apply") { _, _ ->
-                val size = input.text.toString().toFloatOrNull()?.coerceIn(8f, 32f)
-                if (size != null) cells.forEach { styleFor(it).fontSize = size }
-                render(); status.text = "Font size applied to $rangeLabel"
-            }.setNegativeButton("Cancel", null).show()
-    }
-
-    private fun chooseRangeNumberFormat(rangeLabel: String, cells: List<String>) {
-        val opts = arrayOf("General", "Number (2 decimals)", "Percentage", "Currency", "Date (text display)")
-        AlertDialog.Builder(this).setTitle("Number format for $rangeLabel").setItems(opts) { _, index ->
-            cells.forEach { styleFor(it).numberFormat = opts[index] }
-            render(); status.text = "Number format applied to $rangeLabel"
-        }.show()
+                cells.forEach { address ->
+                    val staged = pendingStyles[address]
+                    if (staged != null && staged == CellStyle()) sheetStyles.remove(address)
+                    else if (staged != null) sheetStyles[address] = staged.copy()
+                }
+                render()
+                status.text = "Applied all formatting changes to $rangeLabel"
+                Toast.makeText(this, "Formatting applied to $rangeLabel", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun formattingMenu() {
