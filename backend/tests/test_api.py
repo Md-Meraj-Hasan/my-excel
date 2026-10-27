@@ -45,6 +45,23 @@ def test_cells_sheets_style_and_save_roundtrip():
     assert saved.content[:2] == b'PK'
 
 
+def test_insert_row_shifts_existing_cells_and_autosaves():
+    book_id = client.post("/workbooks", json={}).json()["workbook_id"]
+    client.patch(f"/workbooks/{book_id}/cells", json={
+        "sheet": "Sheet1", "cells": [
+            {"cell": "A1", "value": "Header"},
+            {"cell": "A2", "value": "Keep me"},
+        ]
+    })
+    response = client.post(f"/workbooks/{book_id}/rows", json={"sheet": "Sheet1", "row": 2})
+    assert response.status_code == 200, response.text
+    assert response.json()["inserted_row"] == 2
+    rows = client.get(f"/workbooks/{book_id}/range", params={"sheet": "Sheet1", "range": "A1:A3"}).json()["rows"]
+    assert rows[0][0]["value"] == "Header"
+    assert rows[1][0]["value"] is None
+    assert rows[2][0]["value"] == "Keep me"
+
+
 def test_last_sheet_cannot_be_deleted_and_bad_range_rejected():
     book_id = client.post('/workbooks', json={}).json()['workbook_id']
     response = client.delete(f'/workbooks/{book_id}/sheets/Sheet1')
