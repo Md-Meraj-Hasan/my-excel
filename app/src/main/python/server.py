@@ -36,9 +36,10 @@ def start_server(app_data_dir: str) -> None:
         base = app_dir / "niceexcel"
         data_dir = base / "data"
         recovery_dir = data_dir / "recovery"
+        temp_dir = data_dir / "temp"
         static_dir = base / "static"
 
-        for directory in (base, data_dir, recovery_dir, static_dir):
+        for directory in (base, data_dir, recovery_dir, temp_dir, static_dir):
             directory.mkdir(parents=True, exist_ok=True)
             # Fail early with the exact path if Android denies a write.
             probe = directory / ".niceexcel_write_test"
@@ -53,7 +54,14 @@ def start_server(app_data_dir: str) -> None:
 
         os.environ["NICEEXCEL_DATA_DIR"] = str(data_dir)
         os.environ["NICEEXCEL_RECOVERY_DIR"] = str(recovery_dir)
+        os.environ["NICEEXCEL_TEMP_DIR"] = str(temp_dir)
         os.environ["NICEEXCEL_STATIC_DIR"] = str(static_dir)
+        # Ensure any library using tempfile/TMPDIR writes to app-private local disk.
+        os.environ["TMPDIR"] = str(temp_dir)
+        os.environ["TMP"] = str(temp_dir)
+        os.environ["TEMP"] = str(temp_dir)
+        import tempfile
+        tempfile.tempdir = str(temp_dir)
 
         # Ensure the app's bundled Python package can be found, without writing into it.
         python_root = str(Path(__file__).resolve().parent)
@@ -64,6 +72,7 @@ def start_server(app_data_dir: str) -> None:
         logger.info("App private directory: %s", app_dir)
         logger.info("Writable data directory: %s", data_dir)
         logger.info("Writable recovery directory: %s", recovery_dir)
+        logger.info("Writable temporary directory: %s", temp_dir)
         logger.info("Writable static directory: %s", static_dir)
 
         import uvicorn
