@@ -128,7 +128,7 @@ class CellUpdate(BaseModel):
 
 class UpdateCellsRequest(BaseModel):
     sheet: str = "Sheet1"
-    cells: list[CellUpdate] = Field(min_length=1, max_length=5000)
+    cells: list[CellUpdate] = Field(min_items=1, max_items=5000)
 
 
 
