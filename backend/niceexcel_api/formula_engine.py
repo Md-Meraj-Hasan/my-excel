@@ -13,6 +13,7 @@ from typing import Any
 _CELL_RE = re.compile(r"^\$?([A-Z]{1,3})\$?([1-9][0-9]*)$", re.I)
 _RANGE_RE = re.compile(r"^(?:(?:'((?:[^']|'')+)'|([A-Za-z_][A-Za-z0-9_. ]*))!)?\$?([A-Z]{1,3})\$?([1-9][0-9]*):\$?([A-Z]{1,3})\$?([1-9][0-9]*)$", re.I)
 _SHEET_CELL_RE = re.compile(r"^(?:'((?:[^']|'')+)'|([A-Za-z_][A-Za-z0-9_. ]*))!\$?([A-Z]{1,3})\$?([1-9][0-9]*)$", re.I)
+_WHOLE_COL_RANGE_RE = re.compile(r"^(?:(?:'((?:[^']|'')+)'|([A-Za-z_][A-Za-z0-9_. ]*))!)?\$?([A-Z]{1,3}):\$?([A-Z]{1,3})$", re.I)
 
 
 def _range_parts(expression: str):
@@ -25,7 +26,7 @@ def _range_parts(expression: str):
 
 
 def _is_range(expression: str) -> bool:
-    return _range_parts(expression) is not None
+    return _range_parts(expression) is not None or _WHOLE_COL_RANGE_RE.fullmatch(expression.strip()) is not None
 
 
 class FormulaError(Exception):
@@ -78,7 +79,20 @@ class Evaluator:
             finally: self.stack.remove(key)
         return value
 
+    def normalize_range(self, expression: str) -> str:
+        """Expand Excel whole-column references (for example A:B) to used rows."""
+        match = _WHOLE_COL_RANGE_RE.fullmatch(expression.strip())
+        if not match:
+            return expression
+        quoted, plain, c1, c2 = match.groups()
+        target_sheet = quoted.replace("''", "'") if quoted is not None else plain.strip() if plain else self.sheet_name
+        if target_sheet not in self.workbook.sheetnames:
+            raise FormulaError('#REF!')
+        last_row = max(1, self.workbook[target_sheet].max_row)
+        return f"'{target_sheet.replace(chr(39), chr(39)*2)}'!{c1.upper()}1:{c2.upper()}{last_row}" if quoted is not None else (f"{target_sheet}!{c1.upper()}1:{c2.upper()}{last_row}" if plain else f"{c1.upper()}1:{c2.upper()}{last_row}")
+
     def range(self, expression: str) -> list[Any]:
+        expression = self.normalize_range(expression)
         parts = _range_parts(expression)
         if not parts: raise FormulaError('#REF!')
         target_sheet, c1, r1, c2, r2 = parts
@@ -200,7 +214,7 @@ class Evaluator:
             if fn in ('VLOOKUP', 'XLOOKUP'):
                 if fn == 'VLOOKUP':
                     if len(args) not in (3, 4): raise FormulaError('#VALUE!')
-                    lookup = self.arg(args[0]); table = self.range(args[1]); mrange = _range_parts(args[1])
+                    lookup = self.arg(args[0]); normalized_table = self.normalize_range(args[1]); table = self.range(normalized_table); mrange = _range_parts(normalized_table)
                     target_sheet,c1,top,c2,bottom = mrange; target_sheet = target_sheet or self.sheet_name
                     left,right = _col_num(c1),_col_num(c2)
                     idx = int(self.arg(args[2])); approx = self._truth(self.arg(args[3])) if len(args)==4 else False
@@ -228,8 +242,8 @@ class Evaluator:
                 raise FormulaError('#N/A')
             if fn == 'INDEX':
                 if len(args) not in (2,3): raise FormulaError('#VALUE!')
-                vals=self.range(args[0]); row=int(self.arg(args[1])); col=int(self.arg(args[2])) if len(args)==3 else 1
-                mrange=_range_parts(args[0]); target_sheet,c1,r1,c2,r2=mrange; width=_col_num(c2)-_col_num(c1)+1
+                normalized_index_range=self.normalize_range(args[0]); vals=self.range(normalized_index_range); row=int(self.arg(args[1])); col=int(self.arg(args[2])) if len(args)==3 else 1
+                mrange=_range_parts(normalized_index_range); target_sheet,c1,r1,c2,r2=mrange; width=_col_num(c2)-_col_num(c1)+1
                 if row<1 or col<1 or col>width: raise FormulaError('#REF!')
                 return vals[(row-1)*width+col-1]
             if fn == 'CONCATENATE': return ''.join('' if (v:=self.arg(a)) is None else str(v) for a in args)
@@ -301,15 +315,38 @@ class Evaluator:
             m = re.fullmatch(r'(>=|<=|<>|>|<|=)(.*)', criteria)
             if m:
                 op, raw = m.groups()
-                try: right = float(raw)
-                except ValueError: right = raw
+                raw = raw.strip()
                 try:
-                    return {'=': lambda: value == right or str(value).lower() == str(right).lower(),
-                            '<>': lambda: value != right, '>': lambda: value > right,
-                            '<': lambda: value < right, '>=': lambda: value >= right,
-                            '<=': lambda: value <= right}[op]()
-                except Exception: return False
-        return str(value).lower() == str(criteria).lower()
+                    right: Any = float(raw) if raw else 0
+                except ValueError:
+                    right = raw
+                left = value
+                if isinstance(right, (int, float)):
+                    try:
+                        left = float(value)
+                    except (TypeError, ValueError):
+                        return op == '<>'
+                elif left is None:
+                    left = ''
+                try:
+                    return {
+                        '=': lambda: left == right or str(left).casefold() == str(right).casefold(),
+                        '<>': lambda: left != right and str(left).casefold() != str(right).casefold(),
+                        '>': lambda: left > right,
+                        '<': lambda: left < right,
+                        '>=': lambda: left >= right,
+                        '<=': lambda: left <= right,
+                    }[op]()
+                except (TypeError, ValueError):
+                    return False
+            # Excel COUNTIF/SUMIF support * and ? wildcards, with ~ escaping.
+            if '*' in criteria or '?' in criteria or '~' in criteria:
+                pattern = re.escape(criteria).replace(r'\*', '.*').replace(r'\?', '.')
+                pattern = pattern.replace(r'\~\*', r'\*').replace(r'\~\?', r'\?')
+                return re.fullmatch(pattern, '' if value is None else str(value), re.I) is not None
+        if value is None:
+            value = ''
+        return str(value).casefold() == str(criteria).casefold()
 
 def calculate_cell(workbook, sheet_name: str, address: str) -> dict[str, Any]:
     value = workbook[sheet_name][address].value
