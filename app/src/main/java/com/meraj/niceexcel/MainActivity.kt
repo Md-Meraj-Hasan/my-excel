@@ -25,6 +25,7 @@ class MainActivity : Activity() {
     private var tableHeaderRow: Int? = null
     private var sheetName = "Sheet1"
     private var selected = "A1"
+    private var activeTopSection = "Home"
     private var undoState: Pair<String,String?>? = null
     private var redoState: Pair<String,String?>? = null
     private lateinit var grid: LinearLayout
@@ -86,7 +87,20 @@ class MainActivity : Activity() {
             val button = tool(label) { showTopMenu(label) }.apply {
                 textSize = 13f
                 setPadding(dp(11), dp(9), dp(11), dp(9))
-                setBackgroundColor(Color.rgb(17, 94, 57))
+                setBackgroundColor(if (label == activeTopSection) Color.rgb(209, 250, 229) else Color.rgb(17, 94, 57))
+                setTextColor(if (label == activeTopSection) Color.rgb(6, 78, 59) else Color.WHITE)
+                if (label == activeTopSection) typeface = Typeface.DEFAULT_BOLD
+                setOnClickListener {
+                    activeTopSection = label
+                    for (i in 0 until toolbar.childCount) {
+                        val tab = toolbar.getChildAt(i) as? TextView ?: continue
+                        val active = tab.text.toString() == activeTopSection
+                        tab.setBackgroundColor(if (active) Color.rgb(209, 250, 229) else Color.rgb(17, 94, 57))
+                        tab.setTextColor(if (active) Color.rgb(6, 78, 59) else Color.WHITE)
+                        tab.typeface = if (active) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                    }
+                    showTopMenu(label)
+                }
             }
             toolbar.addView(button, LinearLayout.LayoutParams(-2, -2))
         }
@@ -165,18 +179,42 @@ class MainActivity : Activity() {
         }
         panel.addView(title)
         val dialog = AlertDialog.Builder(this).setView(panel).setNegativeButton("Close", null).create()
-        items.forEachIndexed { index, item ->
-            val row = TextView(this).apply {
-                text = item.first
-                textSize = 15f
-                gravity = Gravity.CENTER_VERTICAL
+        // Excel-style compact horizontal tool strip: one row of tools for the selected section.
+        val toolScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            fillViewport = false
+        }
+        val toolRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(3), 0, dp(3))
+        }
+        val compactLabels = mapOf(
+            "New workbook" to "＋ New", "Open workbook…" to "Open", "Save" to "Save", "Save As…" to "Save As",
+            "Export CSV…" to "CSV", "Undo" to "↶ Undo", "Redo" to "↷ Redo", "Cell formatting…" to "Format",
+            "Find / Replace…" to "Find", "Add row" to "＋ Row", "Add worksheet" to "＋ Sheet", "Table tools…" to "Table",
+            "Format cells…" to "Cells", "Range formatting…" to "Range", "Selected row: Single / Double line…" to "↵ Wrap",
+            "Table styles…" to "Styles", "Sort column…" to "Sort", "Filter column…" to "Filter", "Formula help" to "ƒx Help",
+            "Web Engine" to "Web Excel", "Workbook info" to "Info"
+        )
+        items.forEach { item ->
+            val label = compactLabels[item.first] ?: item.first
+            val button = TextView(this).apply {
+                text = label
+                contentDescription = item.first
+                textSize = 12f
+                gravity = Gravity.CENTER
                 setTextColor(Color.rgb(35, 70, 50))
-                setPadding(dp(14), dp(11), dp(14), dp(11))
-                setBackgroundColor(if (index % 2 == 0) Color.WHITE else Color.rgb(231, 240, 234))
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                setBackgroundColor(Color.WHITE)
                 setOnClickListener { dialog.dismiss(); item.second.invoke() }
             }
-            panel.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
+            toolRow.addView(button, LinearLayout.LayoutParams(-2, dp(42)).apply {
+                marginEnd = dp(5)
+            })
         }
+        toolScroll.addView(toolRow)
+        panel.addView(toolScroll, LinearLayout.LayoutParams(-1, -2))
         dialog.show()
     }
 
@@ -288,7 +326,10 @@ class MainActivity : Activity() {
 
     private fun createRowView(row: Int, columnWidths: List<Int>): LinearLayout {
         val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val rowHeight = if (row in wrappedRows) 42 else 18
+        // Two-line rows need enough height for two complete font metrics plus padding.
+        // Keep the same height for the row header and every cell so no extra-looking
+        // colored strip/cell appears above or below wrapped text.
+        val rowHeight = if (row in wrappedRows) 48 else 24
         val rowHeader = makeCell(row.toString(), 48, true, null, rowHeight)
         rowHeader.setOnClickListener { selectRow(row) }
         line.addView(rowHeader)
@@ -343,8 +384,12 @@ class MainActivity : Activity() {
             maxLines = if (cellRow != null && cellRow in wrappedRows) 2 else 1
             ellipsize = if (maxLines == 2) android.text.TextUtils.TruncateAt.END else null
             setHorizontallyScrolling(false)
-            includeFontPadding = false
-            setPadding(0,0,0,0)
+            // Preserve complete glyph ascenders/descenders and use consistent line spacing.
+            // Without font padding Android can clip the lower line on some device fonts.
+            includeFontPadding = true
+            setLineSpacing(0f, 1.0f)
+            gravity = if (header || key == null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
+            setPadding(0, dp(if (maxLines == 2) 2 else 0), 0, dp(if (maxLines == 2) 2 else 0))
             val st = if (key != null) sheetStyles[key] else null
             setTextColor(if(header) Color.rgb(55,67,77) else st?.textColor ?: Color.rgb(24,32,39))
             textSize = st?.fontSize ?: 13f
