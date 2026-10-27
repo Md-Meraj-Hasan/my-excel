@@ -132,7 +132,7 @@ class MainActivity : Activity() {
             setPadding(dp(5), dp(2), dp(5), dp(2))
             setBackgroundColor(Color.rgb(239, 246, 241))
         }
-        toolScroll.addView(ribbonTools, HorizontalScrollView.LayoutParams(-2, dp(34)))
+        toolScroll.addView(ribbonTools, android.widget.FrameLayout.LayoutParams(-2, dp(34)))
         root.addView(toolScroll, LinearLayout.LayoutParams(-1, dp(36)))
         toolScroll.visibility = android.view.View.GONE
 
@@ -865,6 +865,36 @@ class MainActivity : Activity() {
             targets.forEach { styleFor(it).alignment = alignment }
             render(); status.text = "Alignment applied to $label"
         }.show()
+    }
+
+    private fun chooseRangeFontSize(label: String, targets: List<String>) {
+        val currentSize = targets.firstOrNull()?.let { styleFor(it).fontSize } ?: 13f
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setText(currentSize.toInt().toString())
+            hint = "8–32"
+        }
+        AlertDialog.Builder(this).setTitle("Font size for $label").setView(input)
+            .setPositiveButton("Apply") { _, _ ->
+                val size = input.text.toString().toFloatOrNull()
+                if (size == null) {
+                    Toast.makeText(this, "Enter a font size from 8 to 32", Toast.LENGTH_SHORT).show()
+                } else {
+                    targets.forEach { styleFor(it).fontSize = size.coerceIn(8f, 32f) }
+                    render()
+                    status.text = "Font size applied to $label"
+                }
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun chooseRangeNumberFormat(label: String, targets: List<String>) {
+        val opts = arrayOf("General", "Number (2 decimals)", "Percentage", "Currency", "Date (text display)")
+        AlertDialog.Builder(this).setTitle("Number format for $label").setItems(opts) { _, index ->
+            targets.forEach { styleFor(it).numberFormat = opts[index] }
+            render()
+            status.text = "Number format applied to $label: ${opts[index]}"
+        }.setNegativeButton("Cancel", null).show()
     }
 
     private fun chooseFontSize() {
