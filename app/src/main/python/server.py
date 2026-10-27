@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import logging
+import traceback
 from pathlib import Path
 
 
@@ -25,11 +27,27 @@ def start_server(app_data_dir: str) -> None:
     os.environ["NICEEXCEL_RECOVERY_DIR"] = str(recovery_dir)
     os.environ["NICEEXCEL_STATIC_DIR"] = str(static_dir)
 
-    import uvicorn
-    uvicorn.run(
-        "niceexcel_api.main:app",
-        host="127.0.0.1",
-        port=8765,
-        log_level="warning",
-        access_log=False,
+    log_file = Path(app_data_dir) / "niceexcel_engine_startup.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[logging.FileHandler(str(log_file), encoding="utf-8"), logging.StreamHandler()],
+        force=True,
     )
+    logger = logging.getLogger("NiceExcelWebEngine")
+    logger.info("Starting local FastAPI engine; Python=%s", os.sys.version)
+    logger.info("App data directory: %s", app_data_dir)
+    try:
+        import uvicorn
+        logger.info("Uvicorn version: %s", getattr(uvicorn, "__version__", "unknown"))
+        uvicorn.run(
+            "niceexcel_api.main:app",
+            host="127.0.0.1",
+            port=8765,
+            log_level="info",
+            access_log=False,
+        )
+        logger.error("Uvicorn returned without keeping the server running.")
+    except BaseException:
+        logger.error("FastAPI engine crashed:\n%s", traceback.format_exc())
+        raise
