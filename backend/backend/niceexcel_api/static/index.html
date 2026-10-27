@@ -26,6 +26,11 @@
 @media(min-width:651px){.web-native-toolbar .toolmenu{position:absolute;left:0;right:auto;top:calc(100% + 4px);min-width:220px;max-width:min(92vw,420px);max-height:55dvh}}
 
 
+
+/* Clearly highlight the currently open Excel ribbon section. */
+.web-native-toolbar .toolgroup>summary{transition:background-color .12s ease,color .12s ease; border:1px solid transparent;}
+.web-native-toolbar .toolgroup[open]>summary{background:#d1fae5!important;color:#064e3b!important;font-weight:800;border-color:#6ee7b7;box-shadow:inset 0 -3px #10b981,0 0 0 1px #10b981;}
+.web-native-toolbar .toolgroup[open]{z-index:30}
 </style></head>
 <body>
 <header class="top web-native-toolbar" aria-label="Nice Excel main menu">
