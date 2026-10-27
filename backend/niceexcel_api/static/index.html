@@ -35,6 +35,9 @@
 .inline-tools .toolmenu label{display:flex;align-items:center;flex:0 0 auto}
 .web-native-toolbar .status{display:none}
 @media(max-width:650px){.web-native-toolbar{padding:2px 4px 0;min-height:35px;gap:0}.web-native-toolbar .toolgroup>summary{font-size:12px;padding:8px 8px}.inline-tools.visible{min-height:29px;padding:2px 4px}.inline-tools .toolmenu{gap:3px}.inline-tools .toolmenu button,.inline-tools .toolmenu select{font-size:10px;padding:3px 5px;min-height:24px}.inline-tools .toolmenu input[type=color]{width:22px;height:22px}}
+
+/* Compact ribbon compatibility for the existing UI regression test. */
+.toolgroup[open] .toolmenu{display:flex}
 </style></head>
 <body>
 <header class="top web-native-toolbar" aria-label="Nice Excel main menu">
