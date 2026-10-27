@@ -325,11 +325,15 @@ class MainActivity : Activity() {
     }
 
     private fun createRowView(row: Int, columnWidths: List<Int>): LinearLayout {
-        val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        // Two-line rows need enough height for two complete font metrics plus padding.
-        // Keep the same height for the row header and every cell so no extra-looking
-        // colored strip/cell appears above or below wrapped text.
         val rowHeight = if (row in wrappedRows) 52 else 24
+        // Give the row itself an explicit height matching every child cell. Otherwise
+        // Android can measure a wrapped TextView taller than its siblings and expose
+        // an inset-looking second rectangle around only the multi-line cells.
+        val line = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(-2, dp(rowHeight))
+            minimumHeight = dp(rowHeight)
+        }
         val rowHeader = makeCell(row.toString(), 48, true, null, rowHeight)
         rowHeader.setOnClickListener { selectRow(row) }
         line.addView(rowHeader)
@@ -467,22 +471,14 @@ class MainActivity : Activity() {
             st != null -> st.fillColor
             else -> Color.WHITE
         }
-        // Wrapped rows use a taller cell. Keep their cell edge as the normal gridline
-        // instead of drawing a second-looking green rectangle around the wrapped text.
-        // The selected fill still identifies the active cell; ordinary rows retain the
-        // usual green selection outline.
-        val cellRow = address?.let {
-            Regex("^[A-Z]+(\\d+)$").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull()
-        }
-        val selectedOutline = isSelected && (cellRow == null || cellRow !in wrappedRows)
         val strokeColor = when {
             header -> Color.rgb(174, 187, 198)
-            selectedOutline -> Color.rgb(17, 125, 72)
+            isSelected -> Color.rgb(17, 125, 72)
             st?.border == true -> Color.rgb(70, 80, 88)
             else -> Color.rgb(198, 207, 214)
         }
         val strokeWidth = when {
-            selectedOutline -> 1
+            isSelected -> 1
             st?.border == true && st.thickBorder -> 2
             else -> 1
         }
