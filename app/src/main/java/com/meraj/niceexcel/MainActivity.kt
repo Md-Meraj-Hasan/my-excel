@@ -329,7 +329,7 @@ class MainActivity : Activity() {
         // Two-line rows need enough height for two complete font metrics plus padding.
         // Keep the same height for the row header and every cell so no extra-looking
         // colored strip/cell appears above or below wrapped text.
-        val rowHeight = if (row in wrappedRows) 48 else 24
+        val rowHeight = if (row in wrappedRows) 52 else 24
         val rowHeader = makeCell(row.toString(), 48, true, null, rowHeight)
         rowHeader.setOnClickListener { selectRow(row) }
         line.addView(rowHeader)
@@ -382,14 +382,14 @@ class MainActivity : Activity() {
             setSingleLine(false)
             val cellRow = key?.let { Regex("^[A-Z]+(\\d+)$").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }
             maxLines = if (cellRow != null && cellRow in wrappedRows) 2 else 1
-            ellipsize = if (maxLines == 2) android.text.TextUtils.TruncateAt.END else null
+            ellipsize = if (maxLines == 2) null else android.text.TextUtils.TruncateAt.END
             setHorizontallyScrolling(false)
             // Preserve complete glyph ascenders/descenders and use consistent line spacing.
             // Without font padding Android can clip the lower line on some device fonts.
             includeFontPadding = true
             setLineSpacing(0f, 1.0f)
             gravity = if (header || key == null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
-            setPadding(0, dp(if (maxLines == 2) 2 else 0), 0, dp(if (maxLines == 2) 2 else 0))
+            setPadding(dp(3), 0, dp(3), 0)
             val st = if (key != null) sheetStyles[key] else null
             setTextColor(if(header) Color.rgb(55,67,77) else st?.textColor ?: Color.rgb(24,32,39))
             textSize = st?.fontSize ?: 13f
@@ -537,8 +537,8 @@ class MainActivity : Activity() {
             setText(data[address].orEmpty())
             setSelection(text.length)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            setPadding(dp(7), 0, dp(3), 0)
-            setBackgroundColor(Color.rgb(232, 250, 239))
+            setPadding(dp(3), 0, dp(3), 0)
+            setBackgroundColor(Color.rgb(207, 239, 220))
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
             minHeight = dp(18)
         }
