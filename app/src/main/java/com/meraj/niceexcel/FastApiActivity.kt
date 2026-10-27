@@ -21,6 +21,7 @@ import java.net.URL
 /** Optional FastAPI-powered web spreadsheet. Existing native workbook UI remains available. */
 class FastApiActivity : Activity() {
     private lateinit var webView: WebView
+    private lateinit var loadingText: TextView
     private val localUrl = "http://127.0.0.1:8765/"
     @Volatile private var engineReady = false
     @Volatile private var engineFailed = false
@@ -39,6 +40,14 @@ class FastApiActivity : Activity() {
             setOnClickListener { finish() }
         }
         root.addView(header, LinearLayout.LayoutParams(-1, -2))
+        loadingText = TextView(this).apply {
+            text = "Starting offline Excel engine…"
+            textSize = 14f
+            setTextColor(Color.rgb(55, 67, 77))
+            gravity = android.view.Gravity.CENTER
+            setPadding(16, 18, 16, 18)
+        }
+        root.addView(loadingText, LinearLayout.LayoutParams(-1, -2))
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -48,6 +57,8 @@ class FastApiActivity : Activity() {
                 override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
                     if (request?.isForMainFrame == true && !mainFrameErrorShown) {
                         mainFrameErrorShown = true
+                        loadingText.text = "Excel Web Engine failed to load. Go back and try Web again."
+                        loadingText.visibility = android.view.View.VISIBLE
                         Toast.makeText(this@FastApiActivity, "Excel Web Engine connection failed. Go back and try Web again.", Toast.LENGTH_LONG).show()
                     }
                 }
@@ -133,6 +144,7 @@ class FastApiActivity : Activity() {
     private fun loadWebUi() {
         if (isFinishing || !::webView.isInitialized) return
         mainFrameErrorShown = false
+        if (::loadingText.isInitialized) loadingText.visibility = android.view.View.GONE
         webView.loadUrl(localUrl)
     }
 

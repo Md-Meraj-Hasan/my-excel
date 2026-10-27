@@ -240,7 +240,7 @@ class MainActivity : Activity() {
             }
         }
         val columnWidths = longestByColumn.map { longest ->
-            max(28, minOf(360, longest * 7 + 4))
+            max(28, minOf(360, longest * 7 + 18))
         }
         for(c in 0 until colLimit) {
             val headerCell = makeCell(colName(c),columnWidths[c],true,null)
@@ -297,7 +297,7 @@ class MainActivity : Activity() {
             .map { display(it.key).length }
             .maxOrNull() ?: name.length
         // Three-character default; auto-expand by one character-space per extra character.
-        return max(28, minOf(360, longest * 7 + 4))
+        return max(28, minOf(360, longest * 7 + 18))
     }
 
     private fun makeCell(value:String,width:Int,header:Boolean,key:String?,cellHeight:Int = 24):TextView {
