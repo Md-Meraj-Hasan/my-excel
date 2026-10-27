@@ -41,6 +41,9 @@ class MainActivity : Activity() {
     private var editingAddress: String? = null
     private var selectedRangeCells: List<String> = emptyList()
     private var selectedRangeLabel: String? = null
+    // Rows in this set wrap text into at most two lines; other rows stay single-line.
+    private val wrappedRowsBySheet = mutableMapOf<String, MutableSet<Int>>()
+    private val wrappedRows get() = wrappedRowsBySheet.getOrPut(sheetName) { mutableSetOf() }
 
     private val data get() = sheets.getOrPut(sheetName) { mutableMapOf() }
     private val sheetStyles get() = styles.getOrPut(sheetName) { mutableMapOf() }
@@ -131,6 +134,7 @@ class MainActivity : Activity() {
             "Format" -> listOf(
                 "Format cells…" to { formattingMenu() },
                 "Range formatting…" to { rangeToolsMenu() },
+                "Selected row: Single / Double line…" to { selectedRowTextModeMenu() },
                 "Table styles…" to { tableMenu() }
             )
             "Data" -> listOf(
@@ -174,6 +178,25 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
+    private fun selectedRowTextModeMenu() {
+        val row = Regex("^[A-Z]+(\\d+)$").matchEntire(selected)?.groupValues?.get(1)?.toIntOrNull()
+        if (row == null) {
+            status.text = "Select a cell in the row you want to format first"
+            return
+        }
+        val isWrapped = row in wrappedRows
+        AlertDialog.Builder(this)
+            .setTitle("Row $row text layout")
+            .setSingleChoiceItems(arrayOf("Single line (auto-expand column)", "Double line (wrap text)"), if (isWrapped) 1 else 0) { dialog, which ->
+                if (which == 1) wrappedRows.add(row) else wrappedRows.remove(row)
+                dialog.dismiss()
+                render()
+                status.text = if (which == 1) "Row $row set to double-line text" else "Row $row set to single-line text"
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun newWorkbook() {
         AlertDialog.Builder(this)
             .setTitle("New workbook")
@@ -204,18 +227,20 @@ class MainActivity : Activity() {
         grid.removeAllViews()
         val header=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
         header.addView(makeCell("",48,true,null))
+        // Default width is about three characters. Non-wrapped cell content expands the
+        // whole column automatically, one character-space at a time.
         val longestByColumn = IntArray(colLimit) { c -> colName(c).length }
         data.keys.forEach { address ->
             val match = Regex("^([A-Z]+)(\\d+)$").matchEntire(address) ?: return@forEach
             val column = columnIndex(match.groupValues[1])
-            if (column in 0 until colLimit) {
+            val row = match.groupValues[2].toIntOrNull() ?: return@forEach
+            if (column in 0 until colLimit && row !in wrappedRows) {
                 val shownLength = display(address).length
                 if (shownLength > longestByColumn[column]) longestByColumn[column] = shownLength
             }
         }
-        // Start compact; grow only by approximately one character width per extra character.
         val columnWidths = longestByColumn.map { longest ->
-            max(92, minOf(260, 92 + max(0, longest - 12) * 7))
+            max(28, minOf(360, longest * 7 + 4))
         }
         for(c in 0 until colLimit) {
             val headerCell = makeCell(colName(c),columnWidths[c],true,null)
@@ -229,15 +254,8 @@ class MainActivity : Activity() {
                 if (!raw.contains(filterText!!, ignoreCase = true)) continue
             }
             val line=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
-            // Keep every cell in a row the same height, expanding rows when text wraps.
-            val rowHeight = (0 until colLimit).maxOfOrNull { c ->
-                val address = "${colName(c)}$r"
-                val text = display(address)
-                val charsPerLine = max(1, (columnWidths[c] - 2) / 7)
-                val lines = max(1, (text.length + charsPerLine - 1) / charsPerLine)
-                // Compact rows: keep the existing 13sp text size, but remove excess vertical space.
-                lines * 14 + 1
-            }?.coerceAtLeast(18) ?: 18
+            // Single-line rows stay compact. Double-line mode is applied per selected row.
+            val rowHeight = if (r in wrappedRows) 32 else 18
             val rowHeader = makeCell(r.toString(), 48, true, null, rowHeight)
             rowHeader.setOnClickListener { selectRow(r) }
             line.addView(rowHeader)
@@ -278,15 +296,17 @@ class MainActivity : Activity() {
             .filter { it.key.startsWith(name) && it.key.drop(name.length).toIntOrNull() != null }
             .map { display(it.key).length }
             .maxOrNull() ?: name.length
-        // Compact default width; each additional character adds only one character-space.
-        return max(92, minOf(260, 92 + max(0, longest - 12) * 7))
+        // Three-character default; auto-expand by one character-space per extra character.
+        return max(28, minOf(360, longest * 7 + 4))
     }
 
     private fun makeCell(value:String,width:Int,header:Boolean,key:String?,cellHeight:Int = 24):TextView {
         val tv=TextView(this).apply {
             text=value; textSize=13f; gravity=if(header||key==null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
             setSingleLine(false)
-            maxLines = Int.MAX_VALUE
+            val cellRow = key?.let { Regex("^[A-Z]+(\\d+)$").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }
+            maxLines = if (cellRow != null && cellRow in wrappedRows) 2 else 1
+            ellipsize = if (maxLines == 2) android.text.TextUtils.TruncateAt.END else null
             setHorizontallyScrolling(false)
             includeFontPadding = false
             setPadding(0,0,0,0)

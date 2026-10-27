@@ -15,7 +15,8 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
 import java.io.FileOutputStream
-import java.net.Socket
+import java.net.HttpURLConnection
+import java.net.URL
 
 /** Optional FastAPI-powered web spreadsheet. Existing native workbook UI remains available. */
 class FastApiActivity : Activity() {
@@ -58,48 +59,81 @@ class FastApiActivity : Activity() {
         try {
             copyUiAsset()
             if (!Python.isStarted()) Python.start(AndroidPlatform(this))
-            Thread {
-                try {
-                    Python.getInstance().getModule("server").callAttr("start_server", filesDir.absolutePath)
-                } catch (e: Exception) {
-                    engineFailed = true
-                    val detail = Log.getStackTraceString(e)
-                    try { engineLogFile.appendText("\n=== Python engine start failure ===\n$detail\n") } catch (_: Exception) { }
-                    Log.e("NiceExcelWebEngine", "Python/FastAPI startup failed", e)
-                    runOnUiThread {
-                        if (!isFinishing) Toast.makeText(this, "Excel engine failed: ${e.message ?: e.javaClass.simpleName}. Details saved in niceexcel_engine_startup.log", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }.apply { name = "NiceExcel-FastAPI"; isDaemon = true; start() }
 
-            // Do not load WebView until Uvicorn is actually listening. This avoids
-            // the old fixed-delay race and repeated ERR_CONNECTION_REFUSED popups.
+            // If the local engine survived an activity reopen, reuse it rather than
+            // trying to bind port 8765 a second time.
             Thread {
-                val deadline = System.currentTimeMillis() + 20000L
-                while (System.currentTimeMillis() < deadline && !engineFailed && !isFinishing) {
-                    try {
-                        Socket().use { socket -> socket.connect(java.net.InetSocketAddress("127.0.0.1", 8765), 350) }
-                        engineReady = true
-                        break
-                    } catch (_: Exception) {
-                        try { Thread.sleep(250) } catch (_: InterruptedException) { return@Thread }
-                    }
+                if (waitForHealth(900)) {
+                    engineReady = true
+                    runOnUiThread { if (!isFinishing) loadWebUi() }
+                    return@Thread
                 }
+
+                Thread {
+                    try {
+                        Python.getInstance().getModule("server").callAttr("start_server", filesDir.absolutePath)
+                    } catch (e: Exception) {
+                        engineFailed = true
+                        val detail = Log.getStackTraceString(e)
+                        try { engineLogFile.appendText("\n=== Python engine start failure ===\n$detail\n") } catch (_: Exception) { }
+                        Log.e("NiceExcelWebEngine", "Python/FastAPI startup failed", e)
+                        runOnUiThread {
+                            if (!isFinishing) Toast.makeText(
+                                this,
+                                "Excel engine failed. See niceexcel_engine_startup.log for details.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }.apply { name = "NiceExcel-FastAPI"; isDaemon = true; start() }
+
+                val ready = waitForHealth(25000)
                 runOnUiThread {
                     if (isFinishing) return@runOnUiThread
-                    if (engineReady) {
-                        mainFrameErrorShown = false
-                        webView.loadUrl(localUrl)
+                    if (ready) {
+                        engineReady = true
+                        loadWebUi()
                     } else if (!engineFailed) {
-                        val detail = try { if (engineLogFile.exists()) engineLogFile.readText().takeLast(700) else "No Python exception captured; server did not listen on 127.0.0.1:8765." } catch (_: Exception) { "Server did not listen on 127.0.0.1:8765." }
+                        val detail = try {
+                            if (engineLogFile.exists()) engineLogFile.readText().takeLast(900)
+                            else "No startup log was created. Expected local health endpoint: 127.0.0.1:8765/health"
+                        } catch (_: Exception) { "Could not read engine startup log." }
                         Log.e("NiceExcelWebEngine", "Engine readiness timeout: $detail")
-                        Toast.makeText(this, "Excel engine did not start. Check niceexcel_engine_startup.log", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, "Excel engine did not become ready. Check niceexcel_engine_startup.log.", Toast.LENGTH_LONG).show()
                     }
                 }
-            }.apply { name = "NiceExcel-EngineReady"; isDaemon = true; start() }
+            }.apply { name = "NiceExcel-EngineBootstrap"; isDaemon = true; start() }
         } catch (e: Exception) {
+            Log.e("NiceExcelWebEngine", "Unable to initialize Web Engine screen", e)
             Toast.makeText(this, "Python runtime could not start: ${e.message}", Toast.LENGTH_LONG).show()
         }
+    }
+
+    private fun waitForHealth(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline && !isFinishing) {
+            var connection: HttpURLConnection? = null
+            try {
+                connection = (URL("http://127.0.0.1:8765/health").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 500
+                    readTimeout = 500
+                    requestMethod = "GET"
+                }
+                if (connection.responseCode == 200) return true
+            } catch (_: Exception) {
+                // The server is not ready yet; keep polling until the deadline.
+            } finally {
+                connection?.disconnect()
+            }
+            try { Thread.sleep(250) } catch (_: InterruptedException) { return false }
+        }
+        return false
+    }
+
+    private fun loadWebUi() {
+        if (isFinishing || !::webView.isInitialized) return
+        mainFrameErrorShown = false
+        webView.loadUrl(localUrl)
     }
 
     private fun copyUiAsset() {
