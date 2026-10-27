@@ -4,6 +4,7 @@ import csv
 import io
 import os
 import re
+import tempfile
 import uuid
 from copy import copy
 from typing import Any
@@ -39,6 +40,12 @@ _redo_history: dict[str, list[bytes]] = {}
 _HISTORY_LIMIT = 20
 _RECOVERY_DIR = Path(os.environ.get("NICEEXCEL_RECOVERY_DIR", str(Path(__file__).resolve().parent.parent / "data" / "recovery")))
 _RECOVERY_DIR.mkdir(parents=True, exist_ok=True)
+_TEMP_DIR = Path(os.environ.get("NICEEXCEL_TEMP_DIR", str(_RECOVERY_DIR.parent / "temp"))).expanduser().resolve()
+_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["TMPDIR"] = str(_TEMP_DIR)
+os.environ["TMP"] = str(_TEMP_DIR)
+os.environ["TEMP"] = str(_TEMP_DIR)
+tempfile.tempdir = str(_TEMP_DIR)
 
 
 def _recovery_path(book_id: str) -> Path:
@@ -237,17 +244,38 @@ async def open_workbook(file: UploadFile = File(...)):
     filename = (file.filename or "").lower()
     if not (filename.endswith(".xlsx") or filename.endswith(".xlsm")):
         raise HTTPException(status_code=415, detail="Only .xlsx and .xlsm files are supported here")
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
-    if len(content) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Workbook exceeds 50 MB prototype limit")
-    try:
-        wb = load_workbook(io.BytesIO(content), data_only=False, keep_vba=filename.endswith(".xlsm"))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not read workbook: {type(exc).__name__}") from exc
-    return _new_session(wb)
 
+    # Stream the uploaded workbook to app-local disk instead of reading the whole
+    # upload into a Python bytes/BytesIO buffer. The intermediate file is always removed.
+    _TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    total = 0
+    try:
+        with tempfile.NamedTemporaryFile(prefix="niceexcel_upload_", suffix=(".xlsm" if filename.endswith(".xlsm") else ".xlsx"),
+                                         dir=str(_TEMP_DIR), delete=False) as temp_file:
+            temp_path = Path(temp_file.name)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 50 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Workbook exceeds 50 MB prototype limit")
+                temp_file.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        try:
+            wb = load_workbook(temp_path, data_only=False, keep_vba=filename.endswith(".xlsm"))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not read workbook: {type(exc).__name__}") from exc
+        return _new_session(wb)
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        await file.close()
 
 @app.get("/workbooks/{book_id}")
 def workbook_info(book_id: str):
