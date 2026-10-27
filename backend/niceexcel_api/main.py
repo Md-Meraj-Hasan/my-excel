@@ -122,6 +122,11 @@ class FormulaPreviewRequest(BaseModel):
     formula: str = Field(max_length=10000)
 
 
+class RowInsertRequest(BaseModel):
+    sheet: str = "Sheet1"
+    row: int = Field(ge=1, le=100000)
+
+
 class SheetRequest(BaseModel):
     name: str = Field(min_length=1, max_length=31)
 
@@ -345,6 +350,17 @@ def update_cells(book_id: str, request: UpdateCellsRequest):
         ws[item.cell.upper()] = _safe_value(item.value)
     _persist_workbook(book_id)
     return {"updated": len(request.cells), "sheet": request.sheet, "autosaved": True}
+
+
+@app.post("/workbooks/{book_id}/rows")
+def insert_row(book_id: str, request: RowInsertRequest):
+    """Insert one worksheet row at the requested 1-based row index."""
+    wb = _book(book_id)
+    ws = _sheet(wb, request.sheet)
+    _record_history(book_id)
+    ws.insert_rows(request.row, 1)
+    _persist_workbook(book_id)
+    return {"inserted_row": request.row, "sheet": request.sheet, "autosaved": True}
 
 
 @app.post("/workbooks/{book_id}/sheets")
