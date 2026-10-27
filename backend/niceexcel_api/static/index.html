@@ -17,7 +17,7 @@
 .web-native-toolbar .toolgroup>summary{list-style:none;border:0;background:transparent;border-radius:5px 5px 0 0;color:#fff;font-size:13px;padding:8px 10px;white-space:nowrap}
 .web-native-toolbar .toolgroup>summary::-webkit-details-marker{display:none}
 .web-native-toolbar .toolgroup>summary:hover,.web-native-toolbar .toolgroup[open]>summary{background:#176d46;box-shadow:inset 0 -2px #9be7c4}
-.web-native-toolbar .toolmenu{display:none;position:absolute;left:0;right:0;top:100%;width:100%;min-width:0;max-width:none;max-height:none;overflow-x:auto;overflow-y:visible;flex-wrap:nowrap;align-items:center;gap:5px;padding:7px 8px;background:var(--panel);color:var(--text);border:0;border-bottom:1px solid var(--line);box-shadow:0 3px 8px #0002;z-index:30;white-space:nowrap}
+.web-native-toolbar .toolmenu{display:none;position:fixed;left:4px;right:4px;top:100px;width:auto;min-width:0;max-width:none;max-height:none;overflow-x:auto;overflow-y:visible;flex-wrap:nowrap;align-items:center;gap:5px;padding:7px 8px;background:var(--panel);color:var(--text);border:0;border-bottom:1px solid var(--line);box-shadow:0 3px 8px #0002;z-index:30;white-space:nowrap}
 .web-native-toolbar .toolgroup[open] .toolmenu{display:flex}
 .web-native-toolbar .toolmenu button,.web-native-toolbar .toolmenu select{flex:0 0 auto;color:var(--text);background:var(--panel2);border-color:var(--line);padding:6px 8px;font-size:12px;min-height:31px}
 .web-native-toolbar .toolmenu button.primary{background:#275bc4;color:#fff;border-color:#477de5}
@@ -25,7 +25,7 @@
 .web-native-toolbar .toolmenu label{display:flex;align-items:center;flex:0 0 auto}
 .web-native-toolbar .status{display:none}
 @media(max-width:650px){.web-native-toolbar{padding:2px 4px 0;min-height:35px;gap:0}.web-native-toolbar .toolgroup>summary{font-size:12px;padding:8px 8px}.web-native-toolbar .toolmenu{padding:5px 6px;gap:4px}.web-native-toolbar .toolmenu button,.web-native-toolbar .toolmenu select{font-size:11px;padding:5px 7px;min-height:29px}.web-native-toolbar .toolmenu input[type=color]{width:27px;height:27px}}
-@media(min-width:651px){.web-native-toolbar .toolmenu{left:0;right:0;top:100%;width:100%;max-height:none}}
+@media(min-width:651px){.web-native-toolbar .toolmenu{position:fixed;left:4px;right:4px;top:100px;width:auto;max-height:45dvh}}
 
 
 /* Clearly highlight the currently open Excel ribbon section. */
@@ -116,7 +116,13 @@
      summary.setAttribute('role','button'); summary.setAttribute('aria-label',summary.textContent.trim()+' tools');
      group.querySelectorAll('.toolmenu button[id]').forEach(btn=>{const label=btn.textContent.trim();btn.title=label;btn.setAttribute('aria-label',label);if(shortLabels[btn.id])btn.textContent=shortLabels[btn.id];});
      group.querySelectorAll('.toolmenu select').forEach(el=>{el.style.maxWidth='118px';});
-     group.addEventListener('toggle',()=>{if(group.open){groups.forEach(other=>{if(other!==group)other.open=false;});}});
+           group.addEventListener('toggle',()=>{
+        if(group.open){
+          groups.forEach(other=>{if(other!==group)other.open=false;});
+          const menu=group.querySelector('.toolmenu');
+          if(menu){menu.style.position='fixed';menu.style.left='4px';menu.style.right='4px';menu.style.width='auto';menu.style.top=Math.ceil(group.closest('.web-native-toolbar').getBoundingClientRect().bottom)+'px';}
+        }
+      });
    }
    // Home is the compact default; users can tap any section to change the strip.
    const home=groups.find(g=>g.querySelector('summary')?.textContent.trim()==='Home');
