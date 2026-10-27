@@ -133,6 +133,12 @@ class UpdateCellsRequest(BaseModel):
 
 
 
+
+
+class RowInsertRequest(BaseModel):
+    sheet: str = "Sheet1"
+    row: int = Field(default=1, ge=1, le=100000)
+
 class FormulaPreviewRequest(BaseModel):
     sheet: str = "Sheet1"
     cell: str = Field(pattern=r"^[A-Za-z]{1,3}[1-9][0-9]*$")
@@ -363,6 +369,19 @@ def update_cells(book_id: str, request: UpdateCellsRequest):
     _persist_workbook(book_id)
     return {"updated": len(request.cells), "sheet": request.sheet, "autosaved": True}
 
+
+
+
+@app.post("/workbooks/{book_id}/rows")
+def insert_row(book_id: str, request: RowInsertRequest):
+    wb = _book(book_id)
+    ws = _sheet(wb, request.sheet)
+    if request.row > 100000:
+        raise HTTPException(status_code=422, detail="Row number is too large")
+    _record_history(book_id)
+    ws.insert_rows(request.row, 1)
+    _persist_workbook(book_id)
+    return {"inserted_row": request.row, "sheet": request.sheet, "autosaved": True}
 
 @app.post("/workbooks/{book_id}/sheets")
 def add_sheet(book_id: str, request: SheetRequest):

@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.JavascriptInterface
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -31,15 +32,6 @@ class FastApiActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE) }
-        val header = TextView(this).apply {
-            text = "←  Nice Excel Web Engine"
-            textSize = 18f
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.rgb(17, 94, 57))
-            setPadding(24, 24, 16, 24)
-            setOnClickListener { finish() }
-        }
-        root.addView(header, LinearLayout.LayoutParams(-1, -2))
         loadingText = TextView(this).apply {
             text = "Starting offline Excel engine…"
             textSize = 14f
@@ -65,6 +57,12 @@ class FastApiActivity : Activity() {
             }
             webChromeClient = WebChromeClient()
         }
+        webView.addJavascriptInterface(object {
+            @JavascriptInterface
+            fun goNative() {
+                runOnUiThread { finish() }
+            }
+        }, "NiceExcelNative")
         root.addView(webView, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
         try {

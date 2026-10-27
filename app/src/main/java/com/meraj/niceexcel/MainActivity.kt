@@ -288,7 +288,7 @@ class MainActivity : Activity() {
 
     private fun createRowView(row: Int, columnWidths: List<Int>): LinearLayout {
         val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val rowHeight = if (row in wrappedRows) 32 else 18
+        val rowHeight = if (row in wrappedRows) 42 else 18
         val rowHeader = makeCell(row.toString(), 48, true, null, rowHeight)
         rowHeader.setOnClickListener { selectRow(row) }
         line.addView(rowHeader)
