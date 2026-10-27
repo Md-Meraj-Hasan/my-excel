@@ -331,6 +331,11 @@ class MainActivity : Activity() {
         // an inset-looking second rectangle around only the multi-line cells.
         val line = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            // Do not baseline-align cells in a row. A two-line TextView has a different
+            // baseline from its one-line siblings; baseline alignment vertically offsets
+            // its background and creates the apparent extra/inset rectangle.
+            baselineAligned = false
+            gravity = Gravity.TOP
             layoutParams = LinearLayout.LayoutParams(-2, dp(rowHeight))
             minimumHeight = dp(rowHeight)
         }
