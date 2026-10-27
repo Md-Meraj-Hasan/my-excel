@@ -46,7 +46,6 @@ class FastApiActivity : Activity() {
             setTextColor(Color.rgb(55, 67, 77))
             gravity = android.view.Gravity.CENTER
             setPadding(16, 18, 16, 18)
-            setTextIsSelectable(true)
         }
         root.addView(loadingText, LinearLayout.LayoutParams(-1, -2))
         webView = WebView(this).apply {
@@ -90,17 +89,11 @@ class FastApiActivity : Activity() {
                         try { engineLogFile.appendText("\n=== Python engine start failure ===\n$detail\n") } catch (_: Exception) { }
                         Log.e("NiceExcelWebEngine", "Python/FastAPI startup failed", e)
                         runOnUiThread {
-                            if (!isFinishing) {
-                                val logTail = readEngineLogTail()
-                                loadingText.visibility = android.view.View.VISIBLE
-                                loadingText.gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
-                                loadingText.text = "Excel engine failed to start.\n\nReason: ${e.message ?: e.javaClass.simpleName}\n\nStartup log (latest):\n$logTail"
-                                Toast.makeText(
-                                    this,
-                                    "Excel engine failed. Error details are shown on this screen.",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
+                            if (!isFinishing) Toast.makeText(
+                                this,
+                                "Excel engine failed. See niceexcel_engine_startup.log for details.",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                     }
                 }.apply { name = "NiceExcel-FastAPI"; isDaemon = true; start() }
@@ -117,26 +110,13 @@ class FastApiActivity : Activity() {
                             else "No startup log was created. Expected local health endpoint: 127.0.0.1:8765/health"
                         } catch (_: Exception) { "Could not read engine startup log." }
                         Log.e("NiceExcelWebEngine", "Engine readiness timeout: $detail")
-                        loadingText.visibility = android.view.View.VISIBLE
-                        loadingText.gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
-                        loadingText.text = "Excel engine startup timed out after 25 seconds.\n\nExpected health endpoint: http://127.0.0.1:8765/health\n\nStartup log (latest):\n${readEngineLogTail()}"
-                        Toast.makeText(this, "Excel engine did not become ready. Error details are shown on this screen.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, "Excel engine did not become ready. Check niceexcel_engine_startup.log.", Toast.LENGTH_LONG).show()
                     }
                 }
             }.apply { name = "NiceExcel-EngineBootstrap"; isDaemon = true; start() }
         } catch (e: Exception) {
             Log.e("NiceExcelWebEngine", "Unable to initialize Web Engine screen", e)
             Toast.makeText(this, "Python runtime could not start: ${e.message}", Toast.LENGTH_LONG).show()
-        }
-    }
-
-
-    private fun readEngineLogTail(): String {
-        return try {
-            if (engineLogFile.isFile) engineLogFile.readText().takeLast(2800)
-            else "Startup log was not created at: ${engineLogFile.absolutePath}\nThis usually means Python failed before server.py could initialize logging."
-        } catch (e: Exception) {
-            "Could not read startup log: ${e.javaClass.simpleName}: ${e.message}\nPath: ${engineLogFile.absolutePath}"
         }
     }
 

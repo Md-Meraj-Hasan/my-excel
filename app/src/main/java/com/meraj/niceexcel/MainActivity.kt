@@ -514,6 +514,16 @@ class MainActivity : Activity() {
             editingAddress = null
             (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                 .hideSoftInputFromWindow(editor.windowToken, 0)
+
+            // Restore the original TextView before trying the fast in-place refresh.
+            // Previously the editor replaced this view, but the fast path updated the
+            // detached TextView and skipped render(), leaving the cell stuck in edit mode.
+            val editorIndex = parent.indexOfChild(editor)
+            if (editorIndex >= 0) {
+                parent.removeViewAt(editorIndex)
+                parent.addView(cell, editorIndex, params)
+            }
+            cell.text = display(address)
             val fastUpdated = save && refreshAfterCellEdit(address, newValue)
             if (!fastUpdated) render()
             select(address)
