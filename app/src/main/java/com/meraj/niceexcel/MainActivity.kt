@@ -182,7 +182,7 @@ class MainActivity : Activity() {
         // Excel-style compact horizontal tool strip: one row of tools for the selected section.
         val toolScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
-            fillViewport = false
+            setFillViewport(false)
         }
         val toolRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
