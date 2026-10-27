@@ -324,3 +324,28 @@ def test_dependency_graph_detects_cycles_and_self_reference():
     assert graph['formula_count'] == 4
     assert all(n['in_cycle'] for n in graph['nodes'] if n['cell'] in {'A1','B1','C1'})
     assert not next(n for n in graph['nodes'] if n['cell'] == 'D1')['in_cycle']
+
+
+def test_formula_engine_regression_whole_column_vlookup_and_countif_criteria():
+    from niceexcel_api.formula_engine import calculate_cell
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws['A1'] = 'Apple'
+    ws['B1'] = 12
+    ws['A2'] = 'Pear'
+    ws['B2'] = 18
+    ws['A3'] = 'Orange'
+    ws['B3'] = 25
+    ws['D1'] = '=VLOOKUP(A2,A:B,2,FALSE)'
+    ws['D2'] = '=COUNTIF(B1:B3,">5")'
+    ws['D3'] = '=COUNTIF(B1:B3,">20")'
+    ws['D4'] = '=SUMIF(B1:B3,">10",B1:B3)'
+    ws['D5'] = '=VLOOKUP("Pear",A:B,2,FALSE)'
+
+    assert calculate_cell(wb, ws.title, 'D1')['calculated_value'] == 18
+    assert calculate_cell(wb, ws.title, 'D2')['calculated_value'] == 3
+    assert calculate_cell(wb, ws.title, 'D3')['calculated_value'] == 1
+    assert calculate_cell(wb, ws.title, 'D4')['calculated_value'] == 55.0
+    assert calculate_cell(wb, ws.title, 'D5')['calculated_value'] == 18
