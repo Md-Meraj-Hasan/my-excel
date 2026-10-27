@@ -10,6 +10,7 @@ import android.webkit.WebViewClient
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import android.util.Log
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
@@ -23,6 +24,7 @@ class FastApiActivity : Activity() {
     @Volatile private var engineReady = false
     @Volatile private var engineFailed = false
     private var mainFrameErrorShown = false
+    private val engineLogFile by lazy { File(filesDir, "niceexcel_engine_startup.log") }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,8 +63,11 @@ class FastApiActivity : Activity() {
                     Python.getInstance().getModule("server").callAttr("start_server", filesDir.absolutePath)
                 } catch (e: Exception) {
                     engineFailed = true
+                    val detail = Log.getStackTraceString(e)
+                    try { engineLogFile.appendText("\n=== Python engine start failure ===\n$detail\n") } catch (_: Exception) { }
+                    Log.e("NiceExcelWebEngine", "Python/FastAPI startup failed", e)
                     runOnUiThread {
-                        if (!isFinishing) Toast.makeText(this, "Local engine failed to start: ${e.message}", Toast.LENGTH_LONG).show()
+                        if (!isFinishing) Toast.makeText(this, "Excel engine failed: ${e.message ?: e.javaClass.simpleName}. Details saved in niceexcel_engine_startup.log", Toast.LENGTH_LONG).show()
                     }
                 }
             }.apply { name = "NiceExcel-FastAPI"; isDaemon = true; start() }
@@ -86,7 +91,9 @@ class FastApiActivity : Activity() {
                         mainFrameErrorShown = false
                         webView.loadUrl(localUrl)
                     } else if (!engineFailed) {
-                        Toast.makeText(this, "Excel engine did not become ready. Please reopen Web.", Toast.LENGTH_LONG).show()
+                        val detail = try { if (engineLogFile.exists()) engineLogFile.readText().takeLast(700) else "No Python exception captured; server did not listen on 127.0.0.1:8765." } catch (_: Exception) { "Server did not listen on 127.0.0.1:8765." }
+                        Log.e("NiceExcelWebEngine", "Engine readiness timeout: $detail")
+                        Toast.makeText(this, "Excel engine did not start. Check niceexcel_engine_startup.log", Toast.LENGTH_LONG).show()
                     }
                 }
             }.apply { name = "NiceExcel-EngineReady"; isDaemon = true; start() }
