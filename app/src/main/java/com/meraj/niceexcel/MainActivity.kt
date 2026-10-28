@@ -1196,7 +1196,7 @@ class MainActivity : Activity() {
                         st.textColor = Color.BLACK
                         st.border = false
                         st.thickBorder = false
-                        st.alignment = "GENERAL"
+                        st.alignment = Gravity.CENTER_VERTICAL or Gravity.START
                         if (st == CellStyle()) sheetStyles.remove(address)
                     }
                     tableHeaderRow = null
