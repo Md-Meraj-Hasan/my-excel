@@ -276,49 +276,72 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Paste tab/newline separated clipboard text into a rectangular range starting at the selected cell. */
+    /** Safely paste tab/newline-separated clipboard text into a rectangular range. */
     private fun pasteRangeFromClipboard() {
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-        val clip = clipboard.primaryClip
-        if (clip == null || clip.itemCount == 0) {
-            status.text = "Clipboard is empty. Copy a table first, then tap Paste Range."
-            return
-        }
-        val text = clip.getItemAt(0).coerceToText(this)?.toString().orEmpty()
-        if (text.isBlank()) {
-            status.text = "Clipboard has no text to paste"
-            return
-        }
-        val normalized = text.replace("\r\n", "\n").replace('\r', '\n').trimEnd('\n')
-        val rows = normalized.split('\n').map { it.split('\t') }
-        val start = Regex("^([A-Z]+)([1-9][0-9]*)$").matchEntire(selected)
-        if (start == null) { status.text = "Select a starting cell first"; return }
-        val startCol = columnIndex(start.groupValues[1])
-        val startRow = start.groupValues[2].toIntOrNull() ?: 1
-        val maxCols = rows.maxOfOrNull { it.size } ?: 0
-        if (maxCols == 0 || rows.isEmpty()) { status.text = "No table data found"; return }
-        if (startCol + maxCols > colLimit) {
-            AlertDialog.Builder(this).setMessage("Pasted data exceeds the ${colLimit}-column grid. Select an earlier starting column.")
-                .setPositiveButton("OK", null).show()
-            return
-        }
-        if (startRow + rows.size - 1 > 10000) {
-            status.text = "Pasted data exceeds the 10,000-row safety limit"; return
-        }
-        undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
-        redoHistory.getOrPut(sheetName) { mutableListOf() }.clear()
-        rows.forEachIndexed { ri, row ->
-            row.forEachIndexed { ci, value ->
-                val address = "${colName(startCol + ci)}${startRow + ri}"
-                if (value.isEmpty()) data.remove(address) else data[address] = value
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+            val clip = clipboard?.primaryClip
+            if (clip == null || clip.itemCount == 0) {
+                status.text = "Clipboard is empty. Copy a table first, then tap Paste Range."
+                return
             }
+
+            // Android clipboard items can be plain text, styled text, or URI-backed items.
+            // Convert safely and report a recoverable message instead of crashing the app.
+            val text = try {
+                clip.getItemAt(0).coerceToText(this)?.toString().orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+            if (text.isBlank()) {
+                status.text = "Clipboard has no readable text. Copy the table again and retry."
+                return
+            }
+
+            val normalized = text.replace("\r\n", "\n").replace('\r', '\n').trimEnd('\n')
+            val rows = normalized.split('\n').map { line -> line.split('\t') }
+            val startMatch = Regex("^([A-Z]+)([1-9][0-9]*)$", RegexOption.IGNORE_CASE).matchEntire(selected)
+            if (startMatch == null) {
+                status.text = "Select a starting cell first"
+                return
+            }
+            val startCol = columnIndex(startMatch.groupValues[1].uppercase(Locale.ROOT))
+            val startRow = startMatch.groupValues[2].toIntOrNull() ?: 1
+            val maxCols = rows.maxOfOrNull { it.size } ?: 0
+            if (maxCols == 0 || rows.isEmpty()) {
+                status.text = "No table data found"
+                return
+            }
+            if (startCol < 0 || startCol + maxCols > colLimit) {
+                AlertDialog.Builder(this)
+                    .setMessage("Pasted data exceeds the ${colLimit}-column grid. Select an earlier starting column.")
+                    .setPositiveButton("OK", null).show()
+                return
+            }
+            if (startRow < 1 || startRow + rows.size - 1 > 10000) {
+                status.text = "Pasted data exceeds the 10,000-row safety limit"
+                return
+            }
+
+            // Keep one undo snapshot before making any changes.
+            undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
+            redoHistory.getOrPut(sheetName) { mutableListOf() }.clear()
+            rows.forEachIndexed { ri, row ->
+                row.forEachIndexed { ci, value ->
+                    val address = "${colName(startCol + ci)}${startRow + ri}"
+                    if (value.isEmpty()) data.remove(address) else data[address] = value
+                }
+            }
+            rowCount = max(rowCount, startRow + rows.size - 1)
+            selected = "${colName(startCol)}$startRow"
+            render()
+            cellName.text = selected
+            formula.setText(data[selected].orEmpty())
+            status.text = "Pasted ${rows.size} rows × $maxCols columns into $sheetName!$selected"
+        } catch (e: Exception) {
+            // Clipboard failures must never close the workbook.
+            status.text = "Paste failed safely: ${e.message ?: "unsupported clipboard content"}"
         }
-        rowCount = max(rowCount, startRow + rows.size - 1)
-        render()
-        selected = "${colName(startCol)}$startRow"
-        cellName.text = selected
-        formula.setText(data[selected].orEmpty())
-        status.text = "Pasted ${rows.size} rows × $maxCols columns into $sheetName!$selected"
     }
 
     private fun selectedRowTextModeMenu() {
