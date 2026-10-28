@@ -46,4 +46,33 @@ class PoiFormulaBridgeTest {
         assertEquals("Nisha ID", result!!.text)
     }
 
+
+    @Test fun acceptsExcelLocaleSemicolonArgumentSeparators() {
+        val cells = mapOf(
+            "A1" to "East", "B1" to "100",
+            "A2" to "West", "B2" to "50",
+            "A3" to "East", "B3" to "25"
+        )
+        val result = PoiFormulaBridge.evaluate(cells, "D1", "SUMIF(A1:A3;\"East\";B1:B3)")
+        assertNotNull(result)
+        assertEquals(125.0, result!!.number!!, 0.00001)
+    }
+
+    @Test fun supportsAbsoluteReferencesAndFormulaDependencies() {
+        val cells = mapOf("A1" to "10", "A2" to "20", "B1" to "=$A$1+$A$2", "B2" to "=B1*2")
+        val result = PoiFormulaBridge.evaluate(cells, "C1", "B2+5")
+        assertNotNull(result)
+        assertEquals(65.0, result!!.number!!, 0.00001)
+    }
+
+    @Test fun supportsQuotedSheetNamesWithSpaces() {
+        val sheets = linkedMapOf(
+            "Formula Tests" to mapOf("B2" to "=SUM('Sales Data'!\$B\$2:\$B\$3)"),
+            "Sales Data" to mapOf("B2" to "10.5", "B3" to "20")
+        )
+        val result = PoiFormulaBridge.evaluate(sheets, "Formula Tests", "B2", "SUM('Sales Data'!\$B\$2:\$B\$3)")
+        assertNotNull(result)
+        assertEquals(30.5, result!!.number!!, 0.00001)
+    }
+
 }
