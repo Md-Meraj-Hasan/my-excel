@@ -9,6 +9,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.os.SystemClock
 import android.text.InputType
 import android.view.Gravity
@@ -79,6 +80,8 @@ class MainActivity : Activity() {
     private val workbookRevision = AtomicInteger(0)
     // Cached pixel-independent column widths from the last full layout.
     private var lastColumnWidths: List<Int> = List(26) { 39 }
+    // Widths are cached per sheet so switching sheets does not rescan every workbook cell.
+    private val columnWidthsBySheet = mutableMapOf<String, List<Int>>()
     private var lastTapAddress: String? = null
     private var lastTapAt = 0L
     private var editingAddress: String? = null
@@ -107,6 +110,10 @@ class MainActivity : Activity() {
         styles["Sheet1"] = mutableMapOf()
         styles["Sheet2"] = mutableMapOf()
         styles["Sheet3"] = mutableMapOf()
+        val defaultWidths = List(colLimit) { c -> max(28, minOf(360, colName(c).length * 7 + 18)) }
+        columnWidthsBySheet["Sheet1"] = defaultWidths
+        columnWidthsBySheet["Sheet2"] = defaultWidths
+        columnWidthsBySheet["Sheet3"] = defaultWidths
         buildUi()
     }
 
@@ -440,11 +447,15 @@ class MainActivity : Activity() {
             .setMessage("Create a blank workbook? Current unsaved changes will be cleared.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Create") { _, _ ->
-                sheets.clear(); styles.clear(); formulaDisplayCache.clear()
+                sheets.clear(); styles.clear(); formulaDisplayCache.clear(); columnWidthsBySheet.clear()
                 sheetName = "Sheet1"; selected = "A1"; rowCount = 50
                 sheets["Sheet1"] = mutableMapOf(); styles["Sheet1"] = mutableMapOf()
                 sheets["Sheet2"] = mutableMapOf(); styles["Sheet2"] = mutableMapOf()
                 sheets["Sheet3"] = mutableMapOf(); styles["Sheet3"] = mutableMapOf()
+                val defaultWidths = List(colLimit) { c -> max(28, minOf(360, colName(c).length * 7 + 18)) }
+                columnWidthsBySheet["Sheet1"] = defaultWidths
+                columnWidthsBySheet["Sheet2"] = defaultWidths
+                columnWidthsBySheet["Sheet3"] = defaultWidths
                 selectedRangeCells = emptyList(); selectedRangeLabel = null
                 render(); cellName.text = selected; formula.setText("")
                 status.text = "New blank workbook"
@@ -545,6 +556,7 @@ class MainActivity : Activity() {
 
     /** Refresh existing cells in place, including widths, instead of rebuilding 1,300 TextViews. */
     private fun refreshVisibleCells() {
+        val perfStarted = SystemClock.elapsedRealtime()
         val longestByColumn = IntArray(colLimit) { c -> colName(c).length }
         val addressPattern = Regex("^([A-Z]+)(\\d+)$")
         data.keys.forEach { address ->
@@ -557,6 +569,7 @@ class MainActivity : Activity() {
         }
         val columnWidths = longestByColumn.map { max(28, minOf(360, it * 7 + 18)) }
         lastColumnWidths = columnWidths
+        columnWidthsBySheet[sheetName] = columnWidths
 
         for (c in 0 until colLimit) {
             val width = dp(columnWidths[c])
@@ -606,9 +619,98 @@ class MainActivity : Activity() {
             applyCellBackground(view, address, false)
         }
         selectedCellView = cellViews[selected]
+        Log.d("NiceExcelPerf", "refreshVisibleCells sheet=$sheetName cells=${cellViews.size} ms=${SystemClock.elapsedRealtime() - perfStarted}")
+    }
+
+    /**
+     * Fast sheet switch path: reuse existing grid and cached widths instead of rescanning
+     * every workbook address and rewriting every layout parameter. All View mutations stay
+     * on the Android main thread. Returns false when a structural render is required.
+     */
+    private fun refreshSheetInPlaceFast(): Boolean {
+        if (cellViews.size != rowCount * colLimit ||
+            columnHeader.childCount != colLimit + 1 ||
+            frozenFirstRow.childCount != colLimit + 1 ||
+            grid.childCount != (rowCount - 1).coerceAtLeast(0)) return false
+
+        val widths = columnWidthsBySheet[sheetName] ?: return false
+        if (widths.size != colLimit) return false
+        val started = SystemClock.elapsedRealtime()
+        workbookRevision.incrementAndGet()
+        lastColumnWidths = widths
+
+        // Update column widths only when the target sheet's cached widths differ.
+        for (c in 0 until colLimit) {
+            val width = dp(widths[c])
+            if (columnHeader.childCount > c + 1) {
+                val v = columnHeader.getChildAt(c + 1)
+                if (v.layoutParams.width != width) {
+                    v.layoutParams = v.layoutParams.apply { this.width = width }
+                }
+            }
+            if (frozenFirstRow.childCount > c + 1) {
+                val v = frozenFirstRow.getChildAt(c + 1)
+                val h = dp(if (1 in wrappedRows) 52 else 24)
+                if (v.layoutParams.width != width || v.layoutParams.height != h) {
+                    v.layoutParams = v.layoutParams.apply { this.width = width; height = h }
+                }
+            }
+        }
+
+        // For a newly created blank sheet, avoid formula evaluation and expensive style lookups.
+        val blankSheet = data.isEmpty() && sheetStyles.isEmpty() && wrappedRows.isEmpty()
+        val addressPattern = Regex("^[A-Z]+(\\d+)$")
+        for ((address, view) in cellViews) {
+            val match = addressPattern.matchEntire(address)
+            val row = match?.groupValues?.get(1)?.toIntOrNull() ?: continue
+            val text = if (blankSheet) "" else display(address)
+            if (view.text.toString() != text) view.text = text
+            val st = if (blankSheet) null else sheetStyles[address]
+            val textColor = st?.textColor ?: Color.rgb(24, 32, 39)
+            if (view.currentTextColor != textColor) view.setTextColor(textColor)
+            val textSize = st?.fontSize ?: 13f
+            if (view.textSize != textSize) view.textSize = textSize
+            val style = (if (st?.bold == true) Typeface.BOLD else Typeface.NORMAL) or
+                (if (st?.italic == true) Typeface.ITALIC else Typeface.NORMAL)
+            if (view.typeface?.style != style) view.typeface = Typeface.create(Typeface.DEFAULT, style)
+            view.paint.isUnderlineText = st?.underline == true
+            val gravity = st?.alignment ?: (Gravity.CENTER_VERTICAL or Gravity.START)
+            if (view.gravity != gravity) view.gravity = gravity
+            val maxLines = if (row in wrappedRows) 2 else 1
+            if (view.maxLines != maxLines) view.maxLines = maxLines
+            view.ellipsize = if (maxLines == 2) null else android.text.TextUtils.TruncateAt.END
+            applyCellBackground(view, address, false)
+        }
+
+        for (i in 0 until grid.childCount) {
+            val rowView = grid.getChildAt(i) as? LinearLayout ?: continue
+            val row = rowView.tag as? Int ?: (i + 2)
+            val height = dp(if (row in wrappedRows) 52 else 24)
+            if (rowView.layoutParams.height != height) {
+                rowView.layoutParams = rowView.layoutParams.apply { this.height = height }
+            }
+            if (rowView.minimumHeight != height) rowView.minimumHeight = height
+            val visibility = if (rowPassesFilter(row)) android.view.View.VISIBLE else android.view.View.GONE
+            if (rowView.visibility != visibility) rowView.visibility = visibility
+            for (c in 0 until minOf(colLimit + 1, rowView.childCount)) {
+                val child = rowView.getChildAt(c)
+                val width = dp(if (c == 0) 48 else widths[c - 1])
+                val childHeight = height
+                if (child.layoutParams.width != width || child.layoutParams.height != childHeight) {
+                    child.layoutParams = child.layoutParams.apply { this.width = width; this.height = childHeight }
+                }
+            }
+        }
+        frozenRowHorizontal.visibility = android.view.View.VISIBLE
+        selectedCellView = cellViews[selected]
+        renderTabs()
+        grid.requestLayout()
+        Log.d("NiceExcelPerf", "sheetSwitchFast sheet=$sheetName blank=$blankSheet ms=${SystemClock.elapsedRealtime() - started}")
+        return true
     }
 
     private fun render() {
+        val perfStarted = SystemClock.elapsedRealtime()
         // Treat a full/in-place render as a workbook-state boundary. Any background
         // snapshot started before this boundary must revalidate before committing.
         workbookRevision.incrementAndGet()
@@ -619,6 +721,7 @@ class MainActivity : Activity() {
         if (canReuseGrid) {
             refreshVisibleCells()
             renderTabs()
+            Log.d("NiceExcelPerf", "render sheet=$sheetName mode=reuse ms=${SystemClock.elapsedRealtime() - perfStarted}")
             return
         }
         selectedCellView = null
@@ -645,6 +748,7 @@ class MainActivity : Activity() {
             max(28, minOf(360, longest * 7 + 18))
         }
         lastColumnWidths = columnWidths
+        columnWidthsBySheet[sheetName] = columnWidths
         for(c in 0 until colLimit) {
             val headerCell = makeCell(colName(c),columnWidths[c],true,null)
             headerCell.setOnClickListener { selectColumn(c) }
@@ -663,6 +767,7 @@ class MainActivity : Activity() {
         }
         // Bottom Add Row bar removed: row insertion remains available in the Insert ribbon.
         renderTabs()
+        Log.d("NiceExcelPerf", "render sheet=$sheetName mode=rebuild cells=${cellViews.size} ms=${SystemClock.elapsedRealtime() - perfStarted}")
     }
 
     private fun rowPassesFilter(row: Int): Boolean {
@@ -1015,10 +1120,22 @@ class MainActivity : Activity() {
             }.setNegativeButton("Cancel",null).show()
     }
     private fun addSheet() {
+        val started = SystemClock.elapsedRealtime()
         var n=sheets.size+1; var name="Sheet$n"
         while(sheets.containsKey(name)) { n++; name="Sheet$n" }
-        formulaDisplayCache.clear()
-        sheets[name]=mutableMapOf(); sheetName=name; selected="A1"; render(); cellName.text=selected; formula.setText("")
+        // Formula cache keys include the sheet name, so adding a blank sheet must not
+        // invalidate formula results cached for every existing sheet.
+        sheets[name]=mutableMapOf()
+        styles[name]=mutableMapOf()
+        wrappedRowsBySheet[name]=mutableSetOf()
+        columnWidthsBySheet[name] = List(colLimit) { c -> max(28, minOf(360, (colName(c).length * 7 + 18))) }
+        sheetName=name; selected="A1"
+        lastColumnWidths = columnWidthsBySheet[name]!!
+        val fast = refreshSheetInPlaceFast()
+        if (!fast) render()
+        cellName.text=selected; formula.setText("")
+        status.text = "Added $name"
+        Log.d("NiceExcelPerf", "addSheet totalMs=${SystemClock.elapsedRealtime() - started} fastPath=$fast")
     }
     private fun sheetOptionsMenu() {
         val options = arrayOf("+ Sheet", "Rename current sheet", "Delete current sheet")
@@ -1046,16 +1163,22 @@ class MainActivity : Activity() {
             .setMessage("Delete '$deleting' and its cell data? This cannot be undone.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Delete") { _, _ ->
-                formulaDisplayCache.clear()
+                val started = SystemClock.elapsedRealtime()
                 sheets.remove(deleting)
                 styles.remove(deleting)
                 wrappedRowsBySheet.remove(deleting)
+                columnWidthsBySheet.remove(deleting)
+                // Remove only the deleted sheet's cached formula results; keep other sheets warm.
+                val cachePrefix = "$deleting|"
+                formulaDisplayCache.keys.removeAll { it.startsWith(cachePrefix) }
                 sheetName = sheets.keys.first()
                 selected = "A1"
                 cellName.text = selected
                 formula.setText(data[selected].orEmpty())
-                render()
+                val fast = refreshSheetInPlaceFast()
+                if (!fast) render()
                 status.text = "Deleted sheet: $deleting"
+                Log.d("NiceExcelPerf", "deleteSheet totalMs=${SystemClock.elapsedRealtime() - started} fastPath=$fast")
             }
             .show()
     }
