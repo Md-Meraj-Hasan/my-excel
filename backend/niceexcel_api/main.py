@@ -105,7 +105,7 @@ class CellUpdate(BaseModel):
 
 class UpdateCellsRequest(BaseModel):
     sheet: str = "Sheet1"
-    cells: list[CellUpdate] = Field(min_length=1, max_length=5000)
+    cells: list[CellUpdate] = Field(min_items=1, max_items=5000)
 
 
 
@@ -120,7 +120,7 @@ class RetrieveDataRequest(BaseModel):
     source_sheet: str = Field(min_length=1, max_length=31)
     source_range: str = Field(default="A1:D1000", min_length=2, max_length=100)
     match_column: str = Field(default="A", pattern=r"^[A-Za-z]{1,3}$")
-    lookup_ids: list[Any] = Field(min_length=1, max_length=5000)
+    lookup_ids: list[Any] = Field(min_items=1, max_items=5000)
     destination_sheet: str = Field(min_length=1, max_length=31)
     destination_cell: str = Field(default="A1", pattern=r"^[A-Za-z]{1,3}[1-9][0-9]*$")
 
