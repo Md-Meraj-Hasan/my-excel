@@ -7,6 +7,8 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.text.InputType
 import android.view.Gravity
@@ -18,6 +20,11 @@ import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlin.math.max
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : Activity() {
     private var rowCount = 50
@@ -49,6 +56,27 @@ class MainActivity : Activity() {
     private var pendingCsv = ""
     private var selectedCellView: TextView? = null
     private val cellViews = mutableMapOf<String, TextView>()
+    // Formula results are expensive (POI + fallback evaluator); reuse them across style-only renders.
+    private val formulaDisplayCache = mutableMapOf<String, String>()
+    // CPU-heavy data operations run off the UI thread; Android views are updated only on main.
+    // Bounded four-worker pool: independent CPU tasks may run in parallel without
+    // allowing an unlimited backlog. Never use CallerRunsPolicy because it could
+    // accidentally execute expensive work on Android's UI thread.
+    private val backgroundExecutor = ThreadPoolExecutor(
+        4, 4,
+        30L, TimeUnit.SECONDS,
+        ArrayBlockingQueue<Runnable>(64),
+        { runnable ->
+            Thread(runnable, "NiceExcel-Worker").apply { isDaemon = true }
+        },
+        ThreadPoolExecutor.AbortPolicy()
+    )
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val filterJobId = AtomicInteger(0)
+    private val sortJobId = AtomicInteger(0)
+    // Incremented whenever the UI rebuilds after a workbook mutation; workers must
+    // validate this token before committing snapshots computed from older state.
+    private val workbookRevision = AtomicInteger(0)
     // Cached pixel-independent column widths from the last full layout.
     private var lastColumnWidths: List<Int> = List(26) { 39 }
     private var lastTapAddress: String? = null
@@ -260,7 +288,7 @@ class MainActivity : Activity() {
             "Data" -> listOf(
                 "Sort column A → Z" to { sortColumn() },
                 "Filter column…" to { filterMenu() },
-                "Clear filter" to { filterColumn = null; filterText = null; render(); status.text = "Filter cleared" },
+                "Clear filter" to { filterColumn = null; filterText = null; refreshFilterVisibility() },
                 "Find / Replace…" to { findReplaceMenu() },
                 "Workbook data range info" to { val used = usedRange(); status.text = "Used range: A1:${colName(used.second)}${used.first}" }
             )
@@ -366,6 +394,7 @@ class MainActivity : Activity() {
             }
 
             // Keep one undo snapshot before making any changes.
+            formulaDisplayCache.clear()
             undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
             redoHistory.getOrPut(sheetName) { mutableListOf() }.clear()
             rows.forEachIndexed { ri, row ->
@@ -411,7 +440,7 @@ class MainActivity : Activity() {
             .setMessage("Create a blank workbook? Current unsaved changes will be cleared.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Create") { _, _ ->
-                sheets.clear(); styles.clear()
+                sheets.clear(); styles.clear(); formulaDisplayCache.clear()
                 sheetName = "Sheet1"; selected = "A1"; rowCount = 50
                 sheets["Sheet1"] = mutableMapOf(); styles["Sheet1"] = mutableMapOf()
                 sheets["Sheet2"] = mutableMapOf(); styles["Sheet2"] = mutableMapOf()
@@ -429,7 +458,169 @@ class MainActivity : Activity() {
         text=label; textSize=12f; gravity=Gravity.CENTER; setTextColor(Color.rgb(34,75,54)); setBackgroundColor(Color.rgb(236,246,239)); setOnClickListener { action() }
     }
 
+    /** Update only the affected cell views after formatting; avoid touching the whole 1,300-cell grid. */
+    private fun refreshStyledCells(addresses: Collection<String>) {
+        var needsFullLayout = false
+        addresses.forEach { address ->
+            val view = cellViews[address] ?: return@forEach
+            val text = display(address)
+            val match = Regex("^([A-Z]+)(\\d+)$").matchEntire(address)
+            val col = match?.groupValues?.get(1)?.let { columnIndex(it) } ?: -1
+            if (col in lastColumnWidths.indices && text.length * 7 + 18 > lastColumnWidths[col]) {
+                needsFullLayout = true
+            }
+            view.text = text
+            val st = sheetStyles[address]
+            view.setTextColor(st?.textColor ?: Color.rgb(24, 32, 39))
+            view.textSize = st?.fontSize ?: 13f
+            view.typeface = Typeface.create(
+                Typeface.DEFAULT,
+                (if (st?.bold == true) Typeface.BOLD else Typeface.NORMAL) or
+                    (if (st?.italic == true) Typeface.ITALIC else Typeface.NORMAL)
+            )
+            view.paint.isUnderlineText = st?.underline == true
+            view.gravity = st?.alignment ?: (Gravity.CENTER_VERTICAL or Gravity.START)
+            applyCellBackground(view, address, false)
+        }
+        selectedCellView = cellViews[selected]
+        if (needsFullLayout) render()
+    }
+
+    /** Compute filter matches on a worker thread, then apply only if its input is still current. */
+    private fun refreshFilterVisibility() {
+        val jobId = filterJobId.incrementAndGet()
+        val capturedSheet = sheetName
+        val capturedRevision = workbookRevision.get()
+        val col = filterColumn
+        val query = filterText
+        val rowLimit = rowCount
+        // Worker receives immutable values only; it never reads workbook maps or Android Views.
+        val columnValues = if (col != null && query != null) {
+            (2..rowLimit).associateWith { row -> data["${col}$row"].orEmpty() }
+        } else emptyMap()
+        status.text = if (query.isNullOrEmpty()) "Clearing filter…" else "Applying filter…"
+        try {
+            backgroundExecutor.execute {
+                try {
+                    val visibleRows = if (col == null || query == null) {
+                        (2..rowLimit).toSet()
+                    } else {
+                        columnValues.asSequence()
+                            .filter { (_, value) -> value.contains(query, ignoreCase = true) }
+                            .map { it.key }
+                            .toSet()
+                    }
+                    mainHandler.post {
+                        // Drop stale results after a sheet switch, newer filter, row-count change,
+                        // or edits to the filtered column. Never apply yesterday's answer to new data.
+                        if (isFinishing || isDestroyed || jobId != filterJobId.get() ||
+                            sheetName != capturedSheet || rowCount != rowLimit ||
+                            workbookRevision.get() != capturedRevision ||
+                            filterColumn != col || filterText != query) return@post
+                        if (col != null && query != null && columnValues.any { (row, value) ->
+                                data["${col}$row"].orEmpty() != value
+                            }) return@post
+                        for (i in 0 until grid.childCount) {
+                            val rowView = grid.getChildAt(i) as? LinearLayout ?: continue
+                            val row = rowView.tag as? Int ?: (i + 2)
+                            val wanted = if (row in visibleRows) android.view.View.VISIBLE else android.view.View.GONE
+                            if (rowView.visibility != wanted) rowView.visibility = wanted
+                        }
+                        frozenRowHorizontal.visibility = android.view.View.VISIBLE
+                        grid.requestLayout()
+                        status.text = if (query.isNullOrEmpty()) "Filter cleared" else "Filter: $col contains '$query'"
+                    }
+                } catch (error: Exception) {
+                    mainHandler.post {
+                        if (!isFinishing && !isDestroyed && jobId == filterJobId.get() && sheetName == capturedSheet) {
+                            status.text = "Filter failed safely: ${error.message ?: "please retry"}"
+                        }
+                    }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            if (!isFinishing && !isDestroyed) status.text = "Filter cancelled; please retry"
+        }
+    }
+
+    /** Refresh existing cells in place, including widths, instead of rebuilding 1,300 TextViews. */
+    private fun refreshVisibleCells() {
+        val longestByColumn = IntArray(colLimit) { c -> colName(c).length }
+        val addressPattern = Regex("^([A-Z]+)(\\d+)$")
+        data.keys.forEach { address ->
+            val match = addressPattern.matchEntire(address) ?: return@forEach
+            val column = columnIndex(match.groupValues[1])
+            val row = match.groupValues[2].toIntOrNull() ?: return@forEach
+            if (column in 0 until colLimit && row !in wrappedRows) {
+                longestByColumn[column] = max(longestByColumn[column], display(address).length)
+            }
+        }
+        val columnWidths = longestByColumn.map { max(28, minOf(360, it * 7 + 18)) }
+        lastColumnWidths = columnWidths
+
+        for (c in 0 until colLimit) {
+            val width = dp(columnWidths[c])
+            if (columnHeader.childCount > c + 1) {
+                val headerCell = columnHeader.getChildAt(c + 1)
+                headerCell.layoutParams = (headerCell.layoutParams ?: LinearLayout.LayoutParams(width, dp(24))).apply { this.width = width }
+            }
+            if (frozenFirstRow.childCount > c + 1) {
+                val frozenCell = frozenFirstRow.getChildAt(c + 1)
+                frozenCell.layoutParams = (frozenCell.layoutParams ?: LinearLayout.LayoutParams(width, dp(24))).apply {
+                    this.width = width
+                    height = dp(if (1 in wrappedRows) 52 else 24)
+                }
+            }
+        }
+        for (i in 0 until grid.childCount) {
+            val rowView = grid.getChildAt(i) as? LinearLayout ?: continue
+            val row = rowView.tag as? Int ?: (i + 2)
+            val rowHeight = if (row in wrappedRows) 52 else 24
+            rowView.visibility = if (rowPassesFilter(row)) android.view.View.VISIBLE else android.view.View.GONE
+            rowView.layoutParams = (rowView.layoutParams ?: LinearLayout.LayoutParams(-2, dp(rowHeight))).apply { height = dp(rowHeight) }
+            rowView.minimumHeight = dp(rowHeight)
+            for (c in 0 until minOf(colLimit + 1, rowView.childCount)) {
+                val child = rowView.getChildAt(c)
+                val width = if (c == 0) dp(48) else dp(columnWidths[c - 1])
+                child.layoutParams = (child.layoutParams ?: LinearLayout.LayoutParams(width, dp(rowHeight))).apply {
+                    this.width = width
+                    height = dp(rowHeight)
+                }
+            }
+        }
+        cellViews.forEach { (address, view) ->
+            view.text = display(address)
+            val st = sheetStyles[address]
+            view.setTextColor(st?.textColor ?: Color.rgb(24, 32, 39))
+            view.textSize = st?.fontSize ?: 13f
+            view.typeface = Typeface.create(
+                Typeface.DEFAULT,
+                (if (st?.bold == true) Typeface.BOLD else Typeface.NORMAL) or
+                    (if (st?.italic == true) Typeface.ITALIC else Typeface.NORMAL)
+            )
+            view.paint.isUnderlineText = st?.underline == true
+            view.gravity = st?.alignment ?: (Gravity.CENTER_VERTICAL or Gravity.START)
+            val row = Regex("^[A-Z]+(\\d+)$").matchEntire(address)?.groupValues?.get(1)?.toIntOrNull()
+            view.maxLines = if (row != null && row in wrappedRows) 2 else 1
+            view.ellipsize = if (view.maxLines == 2) null else android.text.TextUtils.TruncateAt.END
+            applyCellBackground(view, address, false)
+        }
+        selectedCellView = cellViews[selected]
+    }
+
     private fun render() {
+        // Treat a full/in-place render as a workbook-state boundary. Any background
+        // snapshot started before this boundary must revalidate before committing.
+        workbookRevision.incrementAndGet()
+        val canReuseGrid = cellViews.size == rowCount * colLimit &&
+            columnHeader.childCount == colLimit + 1 &&
+            frozenFirstRow.childCount == colLimit + 1 &&
+            grid.childCount == (rowCount - 1).coerceAtLeast(0)
+        if (canReuseGrid) {
+            refreshVisibleCells()
+            renderTabs()
+            return
+        }
         selectedCellView = null
         cellViews.clear()
         grid.removeAllViews()
@@ -440,8 +631,9 @@ class MainActivity : Activity() {
         // Default width is about three characters. Non-wrapped cell content expands the
         // whole column automatically, one character-space at a time.
         val longestByColumn = IntArray(colLimit) { c -> colName(c).length }
+        val cellAddressPattern = Regex("^([A-Z]+)(\\d+)$")
         data.keys.forEach { address ->
-            val match = Regex("^([A-Z]+)(\\d+)$").matchEntire(address) ?: return@forEach
+            val match = cellAddressPattern.matchEntire(address) ?: return@forEach
             val column = columnIndex(match.groupValues[1])
             val row = match.groupValues[2].toIntOrNull() ?: return@forEach
             if (column in 0 until colLimit && row !in wrappedRows) {
@@ -465,8 +657,9 @@ class MainActivity : Activity() {
             frozenRowHorizontal.visibility = android.view.View.GONE
         }
         for(r in 2..rowCount) {
-            if (!rowPassesFilter(r)) continue
-            grid.addView(createRowView(r, columnWidths))
+            val rowView = createRowView(r, columnWidths)
+            rowView.visibility = if (rowPassesFilter(r)) android.view.View.VISIBLE else android.view.View.GONE
+            grid.addView(rowView)
         }
         // Bottom Add Row bar removed: row insertion remains available in the Insert ribbon.
         renderTabs()
@@ -491,6 +684,7 @@ class MainActivity : Activity() {
             gravity = Gravity.TOP
             layoutParams = LinearLayout.LayoutParams(-2, dp(rowHeight))
             minimumHeight = dp(rowHeight)
+            tag = row
         }
         val rowHeader = makeCell(row.toString(), 48, true, null, rowHeight)
         rowHeader.setOnClickListener { selectRow(row) }
@@ -758,6 +952,8 @@ class MainActivity : Activity() {
         editor.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) finish(true) }
     }
     private fun putCell(address:String,value:String) {
+        workbookRevision.incrementAndGet()
+        formulaDisplayCache.clear()
         undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
         redoHistory.getOrPut(sheetName) { mutableListOf() }.clear()
         if (value.isEmpty()) data.remove(address) else data[address]=value
@@ -783,6 +979,7 @@ class MainActivity : Activity() {
         redoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
         val previous = stack.removeAt(stack.lastIndex)
         data.clear(); data.putAll(previous)
+        formulaDisplayCache.clear()
         render(); formula.setText(data[selected].orEmpty()); status.text = "Undo complete"
     }
     private fun redo() {
@@ -791,6 +988,7 @@ class MainActivity : Activity() {
         undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
         val next = stack.removeAt(stack.lastIndex)
         data.clear(); data.putAll(next)
+        formulaDisplayCache.clear()
         render(); formula.setText(data[selected].orEmpty()); status.text = "Redo complete"
     }
     private fun findReplaceMenu() {
@@ -806,6 +1004,7 @@ class MainActivity : Activity() {
                     data.toMap().forEach { (address,value) ->
                         if(value.contains(q,true)) { data[address]=value.replace(q,replace.text.toString(),ignoreCase=true); changed++ }
                     }
+                    if (changed > 0) formulaDisplayCache.clear()
                     render(); formula.setText(data[selected].orEmpty()); status.text="Replaced in $changed cell(s)"
                 } else status.text="Enter text to find"
             }.setNeutralButton("Find next") { _,_ ->
@@ -818,6 +1017,7 @@ class MainActivity : Activity() {
     private fun addSheet() {
         var n=sheets.size+1; var name="Sheet$n"
         while(sheets.containsKey(name)) { n++; name="Sheet$n" }
+        formulaDisplayCache.clear()
         sheets[name]=mutableMapOf(); sheetName=name; selected="A1"; render(); cellName.text=selected; formula.setText("")
     }
     private fun sheetOptionsMenu() {
@@ -846,6 +1046,7 @@ class MainActivity : Activity() {
             .setMessage("Delete '$deleting' and its cell data? This cannot be undone.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Delete") { _, _ ->
+                formulaDisplayCache.clear()
                 sheets.remove(deleting)
                 styles.remove(deleting)
                 wrappedRowsBySheet.remove(deleting)
@@ -867,7 +1068,8 @@ class MainActivity : Activity() {
                 if(name.isNotEmpty() && !sheets.containsKey(name)) {
                     val rebuilt=linkedMapOf<String,MutableMap<String,String>>()
                     sheets.forEach { (k,v) -> rebuilt[if(k==old) name else k]=v }
-                    sheets.clear(); sheets.putAll(rebuilt); if(sheetName==old) sheetName=name; render()
+                    formulaDisplayCache.clear()
+                    sheets.clear(); sheets.putAll(rebuilt); if(sheetName==old) sheetName=name; renderTabs()
                 }
             }.setNegativeButton("Cancel",null).show()
     }
@@ -1013,8 +1215,9 @@ class MainActivity : Activity() {
                     10 -> {
                         // Content clearing is intentionally immediate; only format changes are staged.
                         cells.forEach { data.remove(it) }
+                        formulaDisplayCache.clear()
                         if (selected in cells) formula.setText("")
-                        render()
+                        refreshStyledCells(cells)
                         status.text = "Contents cleared for $rangeLabel"
                     }
                 }
@@ -1025,7 +1228,7 @@ class MainActivity : Activity() {
                     if (staged != null && staged == CellStyle()) sheetStyles.remove(address)
                     else if (staged != null) sheetStyles[address] = staged.copy()
                 }
-                render()
+                refreshStyledCells(cells)
                 status.text = "Applied all formatting changes to $rangeLabel"
                 Toast.makeText(this, "Formatting applied to $rangeLabel", Toast.LENGTH_SHORT).show()
             }
@@ -1042,7 +1245,7 @@ class MainActivity : Activity() {
         )
         AlertDialog.Builder(this).setTitle("Format $targetLabel").setItems(options) { _, which ->
             val targets = if (rangeCells.isNotEmpty()) rangeCells else listOf(selected)
-            fun refresh(message: String) { render(); status.text = "$message: $targetLabel" }
+            fun refresh(message: String) { refreshStyledCells(targets); status.text = "$message: $targetLabel" }
             when (which) {
                 0 -> { targets.forEach { styleFor(it).bold = !styleFor(it).bold }; refresh("Bold updated") }
                 1 -> { targets.forEach { styleFor(it).italic = !styleFor(it).italic }; refresh("Italic updated") }
@@ -1054,7 +1257,7 @@ class MainActivity : Activity() {
                 7 -> if (rangeCells.isNotEmpty()) chooseRangeNumberFormat(targetLabel, targets) else chooseNumberFormat()
                 8 -> { targets.forEach { styleFor(it).border = !styleFor(it).border }; refresh("Borders updated") }
                 9 -> { targets.forEach { sheetStyles.remove(it) }; refresh("Formatting cleared") }
-                10 -> { if (rangeCells.isNotEmpty()) { targets.forEach { data.remove(it) }; formula.setText(""); refresh("Contents cleared") } else { putCell(selected, ""); formula.setText(""); render(); status.text = "Cell cleared: $selected" } }
+                10 -> { if (rangeCells.isNotEmpty()) { targets.forEach { data.remove(it) }; formulaDisplayCache.clear(); formula.setText(""); refresh("Contents cleared") } else { putCell(selected, ""); formula.setText(""); render(); status.text = "Cell cleared: $selected" } }
                 11 -> findReplaceMenu()
             }
         }.show()
@@ -1065,7 +1268,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("Alignment for $label").setItems(opts) { _, index ->
             val alignment = when (index) { 1 -> Gravity.CENTER; 2 -> Gravity.CENTER_VERTICAL or Gravity.END; else -> Gravity.CENTER_VERTICAL or Gravity.START }
             targets.forEach { styleFor(it).alignment = alignment }
-            render(); status.text = "Alignment applied to $label"
+            refreshStyledCells(targets); status.text = "Alignment applied to $label"
         }.show()
     }
 
@@ -1083,7 +1286,7 @@ class MainActivity : Activity() {
                     Toast.makeText(this, "Enter a font size from 8 to 32", Toast.LENGTH_SHORT).show()
                 } else {
                     targets.forEach { styleFor(it).fontSize = size.coerceIn(8f, 32f) }
-                    render()
+                    refreshStyledCells(targets)
                     status.text = "Font size applied to $label"
                 }
             }
@@ -1094,7 +1297,7 @@ class MainActivity : Activity() {
         val opts = arrayOf("General", "Number (2 decimals)", "Percentage", "Currency", "Date (text display)")
         AlertDialog.Builder(this).setTitle("Number format for $label").setItems(opts) { _, index ->
             targets.forEach { styleFor(it).numberFormat = opts[index] }
-            render()
+            refreshStyledCells(targets)
             status.text = "Number format applied to $label: ${opts[index]}"
         }.setNegativeButton("Cancel", null).show()
     }
@@ -1102,7 +1305,7 @@ class MainActivity : Activity() {
     private fun chooseFontSize() {
         val input = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(styleFor(selected).fontSize.toInt().toString()); hint = "8–32" }
         AlertDialog.Builder(this).setTitle("Font size").setView(input)
-            .setPositiveButton("Apply") { _, _ -> input.text.toString().toFloatOrNull()?.let { styleFor(selected).fontSize = it.coerceIn(8f, 32f) }; render() }
+            .setPositiveButton("Apply") { _, _ -> input.text.toString().toFloatOrNull()?.let { styleFor(selected).fontSize = it.coerceIn(8f, 32f) }; refreshStyledCells(listOf(selected)) }
             .setNegativeButton("Cancel", null).show()
     }
 
@@ -1123,13 +1326,13 @@ class MainActivity : Activity() {
             AlertDialog.Builder(this)
                 .setTitle("Apply alignment to")
                 .setItems(arrayOf("Selected cell only", "Entire column")) { _, scope ->
-                    if (scope == 0) {
-                        styleFor(selected).alignment = alignment
+                    val targets = if (scope == 0) {
+                        listOf(selected).also { styleFor(selected).alignment = alignment }
                     } else {
                         val col = Regex("^([A-Z]+)").find(selected)?.groupValues?.get(1) ?: "A"
-                        for (row in 1..rowCount) styleFor("$col$row").alignment = alignment
+                        (1..rowCount).map { "$col$it" }.also { addresses -> addresses.forEach { styleFor(it).alignment = alignment } }
                     }
-                    render()
+                    refreshStyledCells(targets)
                     status.text = if (scope == 0) "Alignment applied to $selected" else "Alignment applied to column ${Regex("^([A-Z]+)").find(selected)?.groupValues?.get(1) ?: "A"}"
                 }.show()
         }.show()
@@ -1139,7 +1342,7 @@ class MainActivity : Activity() {
         val opts = arrayOf("General", "Number (2 decimals)", "Percentage", "Currency", "Date (text display)")
         AlertDialog.Builder(this).setTitle("Number format").setItems(opts) { _, i ->
             styleFor(selected).numberFormat = opts[i]
-            render(); status.text = "Number format set: ${opts[i]}"
+            refreshStyledCells(listOf(selected)); status.text = "Number format set: ${opts[i]}"
         }.show()
     }
 
@@ -1152,13 +1355,14 @@ class MainActivity : Activity() {
             "Clear first-row heading"
         )
         AlertDialog.Builder(this).setTitle("Table and borders").setItems(opts) { _, i ->
+            val affected = linkedSetOf<String>()
             val row = Regex("[A-Z]+([0-9]+)").matchEntire(selected)?.groupValues?.get(1)?.toIntOrNull() ?: 1
             when (i) {
                 0 -> {
                     tableHeaderRow = row
                     val lastCol = usedRange().second
                     for (c in 0..lastCol) {
-                        val a = "${colName(c)}$row"; val st = styleFor(a)
+                        val a = "${colName(c)}$row"; affected.add(a); val st = styleFor(a)
                         st.bold = true; st.fillColor = 0xFF1B5E20.toInt(); st.textColor = Color.WHITE; st.border = true
                     }
                     status.text = "Row $row formatted as table heading"
@@ -1166,7 +1370,7 @@ class MainActivity : Activity() {
                 1 -> {
                     val lastCol = usedRange().second
                     for (c in 0..lastCol) {
-                        val a = "${colName(c)}$row"; val st = styleFor(a)
+                        val a = "${colName(c)}$row"; affected.add(a); val st = styleFor(a)
                         st.fillColor = if (c % 2 == 0) 0xFFE8F5E9.toInt() else Color.WHITE; st.border = true
                     }
                 }
@@ -1174,6 +1378,7 @@ class MainActivity : Activity() {
                     val (lastRow, lastCol) = usedRange()
                     for (r in 1..lastRow) for (c in 0..lastCol) {
                         val address = "${colName(c)}$r"
+                        affected.add(address)
                         val st = styleFor(address)
                         st.border = true
                         st.thickBorder = true
@@ -1181,6 +1386,7 @@ class MainActivity : Activity() {
                     status.text = "Thick borders applied to used range A1:${colName(lastCol)}$lastRow"
                 }
                 3 -> {
+                    affected.addAll(sheetStyles.keys)
                     sheetStyles.values.forEach { st -> st.border = false; st.thickBorder = false }
                     sheetStyles.clear(); tableHeaderRow = null
                     status.text = "Table styling removed"
@@ -1190,10 +1396,10 @@ class MainActivity : Activity() {
                     val lastCol = usedRange().second
                     for (c in 0..lastCol) {
                         val address = "${colName(c)}$headingRow"
+                        affected.add(address)
                         val st = sheetStyles[address] ?: continue
                         st.bold = false
                         st.fillColor = Color.WHITE
-                        // Match CellStyle() defaults so cleared heading styles can be removed.
                         st.textColor = Color.rgb(24, 32, 39)
                         st.border = false
                         st.thickBorder = false
@@ -1204,25 +1410,28 @@ class MainActivity : Activity() {
                     status.text = "Heading formatting cleared for row $headingRow"
                 }
             }
-            render()
+            refreshStyledCells(affected)
         }.show()
     }
 
     /** Returns the last used row and column (zero-based column), including formula cells. */
     private fun usedRange(): Pair<Int, Int> {
-        val used = data.filterValues { it.isNotBlank() }.keys
-        if (used.isEmpty()) {
-            val match = Regex("([A-Z]+)([0-9]+)", RegexOption.IGNORE_CASE).matchEntire(selected)
+        var foundUsedCell = false
+        var lastRow = 1
+        var lastCol = 0
+        val addressPattern = Regex("([A-Z]+)([0-9]+)", RegexOption.IGNORE_CASE)
+        data.forEach { (address, value) ->
+            if (value.isBlank()) return@forEach
+            val match = addressPattern.matchEntire(address) ?: return@forEach
+            foundUsedCell = true
+            lastCol = max(lastCol, columnIndex(match.groupValues[1].uppercase(Locale.ROOT)))
+            lastRow = max(lastRow, match.groupValues[2].toIntOrNull() ?: 1)
+        }
+        if (!foundUsedCell) {
+            val match = addressPattern.matchEntire(selected)
             val row = match?.groupValues?.get(2)?.toIntOrNull() ?: 1
             val col = match?.groupValues?.get(1)?.uppercase(Locale.ROOT)?.let { columnIndex(it) } ?: 0
             return max(1, row) to col.coerceIn(0, colLimit - 1)
-        }
-        var lastRow = 1
-        var lastCol = 0
-        used.forEach { address ->
-            val match = Regex("([A-Z]+)([0-9]+)", RegexOption.IGNORE_CASE).matchEntire(address) ?: return@forEach
-            lastCol = max(lastCol, columnIndex(match.groupValues[1].uppercase(Locale.ROOT)))
-            lastRow = max(lastRow, match.groupValues[2].toIntOrNull() ?: 1)
         }
         return lastRow.coerceAtLeast(1) to lastCol.coerceIn(0, colLimit - 1)
     }
@@ -1272,48 +1481,127 @@ class MainActivity : Activity() {
                 if (q.isEmpty()) {
                     filterColumn = null
                     filterText = null
-                    status.text = "Filter cleared"
                 } else if (!Regex("^[A-Z]{1,3}$").matches(col) || columnIndex(col) !in 0 until colLimit) {
                     status.text = "Invalid column. Enter a valid column letter."
                 } else {
                     filterColumn = col
                     filterText = q
-                    status.text = "Filter: $col contains '$q'"
                 }
-                render()
+                refreshFilterVisibility()
             }
             .setNeutralButton("Clear filter") { _, _ ->
                 filterColumn = null
                 filterText = null
-                render()
-                status.text = "Filter cleared"
+                refreshFilterVisibility()
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
     private fun sortColumn() {
-        val col=selected.takeWhile { it.isLetter() }
-        val headerRow=tableHeaderRow ?: 1
-        val rows=(headerRow+1..rowCount).map { row ->
+        val col = selected.takeWhile { it.isLetter() }
+        val sortColumnIndex = columnIndex(col)
+        val headerRow = tableHeaderRow ?: 1
+        val jobId = sortJobId.incrementAndGet()
+        // A sort changes row-to-value mapping; any in-flight filter snapshot must be discarded.
+        filterJobId.incrementAndGet()
+        val capturedSheet = sheetName
+        val capturedRowCount = rowCount
+        val capturedRevision = workbookRevision.get()
+        // Snapshot values and styles together on main. A row containing only formatting
+        // is still a real row for sort/cleanup purposes and must not leave stale styles behind.
+        val allRowsSnapshot = (headerRow + 1..capturedRowCount).map { row ->
             row to (0 until colLimit).map { c -> data["${colName(c)}$row"].orEmpty() }
-        }.filter { (_,values) -> values.any { it.isNotEmpty() } }
-        val sorted=rows.sortedWith(compareBy<Pair<Int,List<String>>> {
-            val v=it.second.getOrNull(columnIndex(col)).orEmpty()
-            v.toDoubleOrNull()?.let { n -> String.format(Locale.US,"%030.8f",n) } ?: v.lowercase(Locale.US)
-        })
-        val styleSnapshots = sorted.map { (oldRow, _) -> oldRow to (0 until colLimit).mapNotNull { c ->
-            val oldAddress="${colName(c)}$oldRow"; sheetStyles[oldAddress]?.let { c to it.copy() }
-        }.toMap() }
-        rows.forEach { (oldRow,_) ->
-            (0 until colLimit).forEach { c -> data.remove("${colName(c)}$oldRow"); sheetStyles.remove("${colName(c)}$oldRow") }
         }
-        sorted.forEachIndexed { idx, pair ->
-            val newRow=headerRow+1+idx
-            pair.second.forEachIndexed { c,v -> if(v.isNotEmpty()) data["${colName(c)}$newRow"]=v }
-            styleSnapshots[idx].second.forEach { (c,style) -> sheetStyles["${colName(c)}$newRow"]=style }
+        val styleSnapshot = allRowsSnapshot.associate { (oldRow, _) ->
+            oldRow to (0 until colLimit).mapNotNull { c ->
+                sheetStyles["${colName(c)}$oldRow"]?.let { c to it.copy() }
+            }.toMap()
         }
-        render(); status.text="Sorted complete rows by $col; related row data kept together"
+        val rowSnapshot = allRowsSnapshot.filter { (row, values) ->
+            values.any { it.isNotEmpty() } || styleSnapshot[row].orEmpty().isNotEmpty()
+        }
+        status.text = "Sorting rows in background…"
+        try {
+            backgroundExecutor.execute {
+                try {
+                    val sorted = rowSnapshot.sortedWith(
+                        compareBy<Pair<Int, List<String>>> { it.second.all { value -> value.isEmpty() } }
+                            .thenBy {
+                                val value = it.second.getOrNull(sortColumnIndex).orEmpty()
+                                value.toDoubleOrNull()?.let { number -> String.format(Locale.US, "%030.8f", number) }
+                                    ?: value.lowercase(Locale.US)
+                            }
+                    )
+                    mainHandler.post {
+                        if (isFinishing || isDestroyed || jobId != sortJobId.get() ||
+                            sheetName != capturedSheet || rowCount != capturedRowCount ||
+                            workbookRevision.get() != capturedRevision ||
+                            (tableHeaderRow ?: 1) != headerRow) {
+                            if (!isFinishing && !isDestroyed && jobId == sortJobId.get() && sheetName == capturedSheet) {
+                                status.text = "Sort cancelled: workbook changed. Please retry."
+                            }
+                            return@post
+                        }
+
+                        // Optimistic concurrency check: if any source row changed while sorting,
+                        // discard the result instead of overwriting newer edits/styles.
+                        val valuesStillMatch = allRowsSnapshot.all { (row, values) ->
+                            values.indices.all { c -> data["${colName(c)}$row"].orEmpty() == values[c] }
+                        }
+                        val stylesStillMatch = styleSnapshot.all { (row, snapshot) ->
+                            (0 until colLimit).all { c -> sheetStyles["${colName(c)}$row"] == snapshot[c] }
+                        }
+                        if (!valuesStillMatch || !stylesStillMatch) {
+                            status.text = "Sort cancelled: cells changed during sorting. Please retry."
+                            return@post
+                        }
+
+                        // Sorting changes row-to-value mapping. Invalidate filter jobs that may
+                        // have started while this sort was being calculated, before committing.
+                        filterJobId.incrementAndGet()
+                        // Commit as one main-thread operation only after every stale-result guard passes.
+                        // Clear the entire sortable region, not just non-empty rows. This
+                        // removes stale formatting from blank rows and prevents ghost styles.
+                        for (oldRow in (headerRow + 1)..capturedRowCount) {
+                            for (c in 0 until colLimit) {
+                                val address = "${colName(c)}$oldRow"
+                                data.remove(address)
+                                sheetStyles.remove(address)
+                            }
+                        }
+                        sorted.forEachIndexed { index, pair ->
+                            val newRow = headerRow + 1 + index
+                            pair.second.forEachIndexed { c, value ->
+                                if (value.isNotEmpty()) data["${colName(c)}$newRow"] = value
+                            }
+                            styleSnapshot[pair.first].orEmpty().forEach { (c, style) ->
+                                sheetStyles["${colName(c)}$newRow"] = style.copy()
+                            }
+                        }
+                        formulaDisplayCache.clear()
+                        render()
+                        status.text = "Sorted complete rows by $col; related row data kept together"
+                    }
+                } catch (error: Exception) {
+                    mainHandler.post {
+                        if (!isFinishing && !isDestroyed && jobId == sortJobId.get() && sheetName == capturedSheet) {
+                            status.text = "Sort failed safely: ${error.message ?: "please retry"}"
+                        }
+                    }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            if (!isFinishing && !isDestroyed) status.text = "Sort cancelled; please retry"
+        }
+    }
+
+    override fun onDestroy() {
+        // Invalidate pending UI callbacks and stop background work when this Activity is gone.
+        filterJobId.incrementAndGet()
+        sortJobId.incrementAndGet()
+        backgroundExecutor.shutdownNow()
+        super.onDestroy()
     }
     private fun display(address:String):String {
         val raw=data[address] ?: return ""
@@ -1322,7 +1610,9 @@ class MainActivity : Activity() {
             val n = raw.toDoubleOrNull()
             return if (n != null && st != null) formatNumber(n, st.numberFormat, raw) else raw
         }
-        return try {
+        val cacheKey = "$sheetName|$address|$raw|${st?.numberFormat ?: "General"}"
+        formulaDisplayCache[cacheKey]?.let { return it }
+        val result = try {
             val expression = raw.drop(1)
             // Try the imported Apache POI evaluator first for broad Excel-function coverage.
             val imported = PoiFormulaBridge.evaluate(data, address, expression)
@@ -1340,6 +1630,8 @@ class MainActivity : Activity() {
                 }.getOrElse { imported?.error ?: "#ERROR" }
             } ?: "#ERROR"
         } catch(_:Exception) { "#ERROR" }
+        formulaDisplayCache[cacheKey] = result
+        return result
     }
     private fun formatNumber(value: Double, format: String, fallback: String): String = when (format) {
         "Number (2 decimals)" -> String.format(Locale.US, "%.2f", value)
@@ -1401,7 +1693,7 @@ class MainActivity : Activity() {
                 status.text="Excel workbook (.xlsx) saved"
             } else if(requestCode==12) {
                 val text=contentResolver.openInputStream(intent.data!!)?.bufferedReader()?.use { it.readText() }.orEmpty()
-                data.clear(); sheetStyles.clear()
+                data.clear(); sheetStyles.clear(); formulaDisplayCache.clear()
                 rowCount = max(50, text.lines().size)
                 text.lines().take(rowCount).forEachIndexed { r,line ->
                     parseCsv(line).take(colLimit).forEachIndexed { c,v -> if(v.isNotEmpty()) data["${colName(c)}${r+1}"]=v }
@@ -1411,6 +1703,7 @@ class MainActivity : Activity() {
                 val loaded = contentResolver.openInputStream(intent.data!!)?.use { XlsxCodec.read(it) } ?: error("Could not open workbook")
                 sheets.clear(); sheets.putAll(loaded.sheets)
                 styles.clear(); styles.putAll(loaded.styles)
+                formulaDisplayCache.clear()
                 reportingMetadata = loaded.reportingMetadata
                 rowCount = max(50, sheets.values.flatMap { it.keys }.mapNotNull { Regex("[A-Z]+([0-9]+)").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 50)
                 loaded.sheets.keys.forEach { styles.getOrPut(it) { mutableMapOf() } }
