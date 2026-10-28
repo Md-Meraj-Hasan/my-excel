@@ -207,8 +207,21 @@ class MainActivity : Activity() {
         syncScroll(frozenRowHorizontal, listOf(headerHorizontal, bodyHorizontal))
         syncScroll(bodyHorizontal, listOf(headerHorizontal, frozenRowHorizontal))
 
-        sheetTabs=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(4),dp(5),dp(4),dp(5)); setBackgroundColor(Color.rgb(231,237,233)) }
-        root.addView(sheetTabs)
+        val sheetTabsScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = true
+            isFillViewport = false
+            overScrollMode = android.view.View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            setBackgroundColor(Color.rgb(231,237,233))
+        }
+        sheetTabs=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+            setPadding(dp(4),dp(5),dp(4),dp(5))
+            setBackgroundColor(Color.rgb(231,237,233))
+            layoutParams = HorizontalScrollView.LayoutParams(-2, -2)
+        }
+        sheetTabsScroll.addView(sheetTabs)
+        root.addView(sheetTabsScroll, LinearLayout.LayoutParams(-1, -2))
         status=TextView(this).apply { text="Ready • Offline workbook"; textSize=12f; setTextColor(Color.WHITE); setPadding(dp(10),dp(7),dp(10),dp(7)); setBackgroundColor(Color.rgb(20,30,40)) }
         root.addView(status)
         setContentView(root)
@@ -233,7 +246,6 @@ class MainActivity : Activity() {
                 "Find / Replace…" to { findReplaceMenu() }
             )
             "Insert" -> listOf(
-                "Add row" to { addOneRow() }, "Add worksheet" to { addSheet() },
                 "Table tools…" to { tableMenu() }, "Merge / table heading tools…" to { tableMenu() }
             )
             "Format" -> listOf(
@@ -263,7 +275,7 @@ class MainActivity : Activity() {
             "New workbook" to "＋ New", "Open workbook…" to "Open", "Save" to "Save", "Save As…" to "Save As",
             "Export CSV…" to "CSV", "Undo" to "↶ Undo", "Redo" to "↷ Redo", "Copy selected cell" to "Copy",
             "Clear selected cell" to "Clear", "Cell formatting…" to "Format", "Paste range from clipboard" to "Paste Range",
-            "Find / Replace…" to "Find", "Add row" to "＋ Row", "Add worksheet" to "＋ Sheet", "Table tools…" to "Table",
+            "Find / Replace…" to "Find", "Table tools…" to "Table",
             "Format cells…" to "Cells", "Range formatting…" to "Range", "Font size…" to "Size", "Text alignment…" to "Align",
             "Number format…" to "Number", "Selected row: Single / Double line…" to "↵ Wrap", "Table styles…" to "Styles",
             "Sort column A → Z" to "Sort A→Z", "Filter column…" to "Filter", "Clear filter" to "Clear filter", "Find / Replace…" to "Find",
@@ -456,29 +468,7 @@ class MainActivity : Activity() {
             if (!rowPassesFilter(r)) continue
             grid.addView(createRowView(r, columnWidths))
         }
-        val addRowBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(4), dp(6), dp(4))
-            setBackgroundColor(Color.rgb(245, 249, 246))
-        }
-        val addRowButton = TextView(this).apply {
-            text = "+"
-            textSize = 25f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.rgb(17, 94, 57))
-            contentDescription = "Add one row"
-            setOnClickListener { addOneRow() }
-        }
-        addRowBar.addView(addRowButton, LinearLayout.LayoutParams(dp(44), dp(40)))
-        addRowBar.addView(TextView(this).apply {
-            text = "Add 1 row"; textSize = 13f; setTextColor(Color.rgb(35, 70, 50)); setPadding(dp(10), 0, 0, 0)
-            setOnClickListener { addOneRow() }
-        }, LinearLayout.LayoutParams(-2, dp(40)))
-        addRowBar.tag = "add-row-bar"
-        grid.addView(addRowBar)
+        // Bottom Add Row bar removed: row insertion remains available in the Insert ribbon.
         renderTabs()
     }
 
@@ -1186,16 +1176,62 @@ class MainActivity : Activity() {
     }
 
     private fun filterMenu() {
-        val col = selected.takeWhile { it.isLetter() }.ifEmpty { "A" }
-        val input = EditText(this).apply { hint = "Text contains… (blank clears filter)"; setText(filterText.orEmpty()) }
-        AlertDialog.Builder(this).setTitle("Filter column $col").setMessage("Filters rows using the selected column.").setView(input)
+        val selectedCol = selected.takeWhile { it.isLetter() }.ifEmpty { "A" }
+        val columnInput = EditText(this).apply {
+            hint = "Column letter, e.g. A, B, D"
+            setSingleLine(true)
+            setText(filterColumn ?: selectedCol)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+        }
+        val queryInput = EditText(this).apply {
+            hint = "Text contains… (blank clears filter)"
+            setSingleLine(true)
+            setText(filterText.orEmpty())
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(4), dp(20), dp(4))
+            addView(TextView(this@MainActivity).apply {
+                text = "Filter column (use the column containing your data, e.g. D for City):"
+                textSize = 13f
+                setTextColor(Color.rgb(45, 65, 54))
+            })
+            addView(columnInput, LinearLayout.LayoutParams(-1, -2))
+            addView(TextView(this@MainActivity).apply {
+                text = "Show rows where the selected column contains:"
+                textSize = 13f
+                setTextColor(Color.rgb(45, 65, 54))
+                setPadding(0, dp(10), 0, 0)
+            })
+            addView(queryInput, LinearLayout.LayoutParams(-1, -2))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Filter rows")
+            .setView(content)
             .setPositiveButton("Apply") { _, _ ->
-                val q = input.text.toString().trim()
-                if (q.isEmpty()) { filterColumn = null; filterText = null; status.text = "Filter cleared" }
-                else { filterColumn = col; filterText = q; status.text = "Filter: $col contains '$q'" }
+                val col = columnInput.text.toString().trim().uppercase(Locale.ROOT)
+                val q = queryInput.text.toString().trim()
+                if (q.isEmpty()) {
+                    filterColumn = null
+                    filterText = null
+                    status.text = "Filter cleared"
+                } else if (!Regex("^[A-Z]{1,3}$").matches(col) || columnIndex(col) !in 0 until colLimit) {
+                    status.text = "Invalid column. Enter a valid column letter."
+                } else {
+                    filterColumn = col
+                    filterText = q
+                    status.text = "Filter: $col contains '$q'"
+                }
                 render()
-            }.setNeutralButton("Clear filter") { _, _ -> filterColumn = null; filterText = null; render(); status.text = "Filter cleared" }
-            .setNegativeButton("Cancel", null).show()
+            }
+            .setNeutralButton("Clear filter") { _, _ ->
+                filterColumn = null
+                filterText = null
+                render()
+                status.text = "Filter cleared"
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun sortColumn() {
