@@ -65,7 +65,7 @@ internal object PoiFormulaBridge {
             val pos = coordinates(formulaAddress) ?: return@use null
             val row = sheet.getRow(pos.first) ?: sheet.createRow(pos.first)
             val formulaCell = row.getCell(pos.second) ?: row.createCell(pos.second)
-            formulaCell.cellFormula = normalizeXlookup(expression.removePrefix("="))
+            formulaCell.cellFormula = normalizeXlookup(normalizeArgumentSeparators(expression.removePrefix("=")))
             val evaluator = workbook.creationHelper.createFormulaEvaluator()
             evaluator.clearAllCachedResultValues()
             val value = evaluator.evaluate(formulaCell) ?: return@use null
@@ -81,6 +81,34 @@ internal object PoiFormulaBridge {
         // POI does not support every Excel function/version; caller falls back to local engine.
         null
     }
+
+    /**
+     * Accept formulas copied from Excel locales that use semicolons between
+     * function arguments. Only separators outside quoted text and nested
+     * string literals are converted; semicolons inside strings are preserved.
+     */
+    private fun normalizeArgumentSeparators(expression: String): String {
+        val out = StringBuilder(expression.length)
+        var quoted = false
+        var i = 0
+        while (i < expression.length) {
+            val ch = expression[i]
+            if (ch == '"') {
+                out.append(ch)
+                if (quoted && i + 1 < expression.length && expression[i + 1] == '"') {
+                    out.append(expression[i + 1])
+                    i += 2
+                    continue
+                }
+                quoted = !quoted
+            } else {
+                out.append(if (!quoted && ch == ';') ',' else ch)
+            }
+            i++
+        }
+        return out.toString()
+    }
+
     /** POI 5.4.1's HSSF evaluator does not implement XLOOKUP. Translate the common
      * exact-match form to INDEX/MATCH so cross-sheet lookup ranges still work. */
     private fun normalizeXlookup(expression: String): String {
