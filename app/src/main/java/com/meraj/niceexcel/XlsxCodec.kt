@@ -88,8 +88,8 @@ internal object XlsxCodec {
                     append("</sheetData>")
                     val ranges = mergedRanges[name].orEmpty().distinct().filter { isValidRange(it) }
                     if (ranges.isNotEmpty()) {
-                        append("<mergeCells count=\\"${ranges.size}\\">")
-                        ranges.forEach { range -> append("<mergeCell ref=\\"${esc(range.uppercase())}\\"/>") }
+                        append("<mergeCells count=\"${ranges.size}\">")
+                        ranges.forEach { range -> append("<mergeCell ref=\"${esc(range.uppercase())}\"/>") }
                         append("</mergeCells>")
                     }
                     append("</worksheet>")
@@ -139,9 +139,16 @@ internal object XlsxCodec {
     private fun isValidRange(range: String): Boolean {
         val parts = range.uppercase().split(":")
         if (parts.size != 2) return false
-        val cellPattern = Regex("[A-Z]{1,3}[1-9][0-9]*")
-        if (parts.any { !cellPattern.matches(it) }) return false
-        return parts[0] != parts[1]
+        val cellPattern = Regex("^([A-Z]{1,3})([1-9][0-9]*)$")
+        val first = cellPattern.matchEntire(parts[0]) ?: return false
+        val last = cellPattern.matchEntire(parts[1]) ?: return false
+        val firstCol = first.groupValues[1].fold(0) { acc, ch -> acc * 26 + (ch - 'A' + 1) }
+        val lastCol = last.groupValues[1].fold(0) { acc, ch -> acc * 26 + (ch - 'A' + 1) }
+        val firstRow = first.groupValues[2].toIntOrNull() ?: return false
+        val lastRow = last.groupValues[2].toIntOrNull() ?: return false
+        if (firstCol == lastCol && firstRow < lastRow) return true
+        if (firstRow == lastRow && firstCol < lastCol) return true
+        return false
     }
 
     private fun makeStylesXml(styles: List<CellStyle>): String {

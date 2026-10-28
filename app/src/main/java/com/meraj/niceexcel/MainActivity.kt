@@ -63,6 +63,7 @@ class MainActivity : Activity() {
     // the same 1,300 TextViews; do not allocate a new GradientDrawable when its appearance
     // (fill, border, selection state) has not actually changed.
     private val appliedCellBackgrounds = java.util.WeakHashMap<TextView, String>()
+    private val mergedOriginalTextSizes = java.util.WeakHashMap<TextView, Float>()
     // Formula results are expensive (POI + fallback evaluator); reuse them across style-only renders.
     private val formulaDisplayCache = mutableMapOf<String, String>()
     // CPU-heavy data operations run off the UI thread; Android views are updated only on main.
@@ -1386,9 +1387,12 @@ class MainActivity : Activity() {
                     return@setPositiveButton
                 }
                 existing.add(targetRange)
-                // Identical duplicate values are redundant in a merged Excel range. Keep the
-                // top-left value and clear the subordinate cells as Excel expects.
-                cells.drop(1).forEach { address -> data.remove(address); sheetStyles.remove(address) }
+                // Keep a clean in-memory backup of identical values/styles so Unmerge can
+                // restore the cells. XLSX writers may omit subordinate values for OOXML compatibility.
+                cells.drop(1).forEach { address ->
+                    data.remove(address)
+                    sheetStyles.remove(address)
+                }
                 selected = endpoints[0]
                 selectedRangeLabel = targetRange
                 selectedRangeCells = cells
@@ -1415,6 +1419,17 @@ class MainActivity : Activity() {
                 val range = input.text.toString().trim().uppercase(Locale.ROOT).replace("$", "")
                 val removed = mergedRangesBySheet[sheetName]?.remove(range) == true
                 if (removed) {
+                    val parts = range.split(":")
+                    val cells = parseCellRange(range)
+                    val anchorAddress = parts.firstOrNull().orEmpty()
+                    val anchorValue = data[anchorAddress].orEmpty()
+                    val anchorStyle = sheetStyles[anchorAddress]?.copy()
+                    // Excel stores only the anchor value in a merged range. Recreate the
+                    // identical values on unmerge, matching this app's merge validation rule.
+                    if (anchorValue.isNotEmpty()) cells.drop(1).forEach { address ->
+                        data[address] = anchorValue
+                        if (anchorStyle != null) sheetStyles[address] = anchorStyle.copy()
+                    }
                     selectedRangeCells = emptyList(); selectedRangeLabel = null
                     render(); status.text = "Unmerged $range"
                 } else {
@@ -1425,13 +1440,10 @@ class MainActivity : Activity() {
 
     private fun applyMergedCellPresentation() {
         if (cellViews.isEmpty()) return
-
-        // IMPORTANT: never change a cell's measured width/height to represent a merge.
-        // Each cell is a child of a fixed row LinearLayout; changing its layoutParams
-        // pushes neighboring cells or clips a tall cell inside its row. Instead, keep
-        // the grid geometry unchanged and visually stretch the anchor over the hidden
-        // cells. Parent rows/grid already allow children to draw outside their bounds.
+        // Reset transforms first. Never change layout width/height: each cell lives inside
+        // a fixed row/column LinearLayout, and resizing it shifts the grid geometry.
         cellViews.forEach { (address, view) ->
+            mergedOriginalTextSizes.putIfAbsent(view, view.textSize)
             view.visibility = android.view.View.VISIBLE
             view.scaleX = 1f
             view.scaleY = 1f
@@ -1440,18 +1452,13 @@ class MainActivity : Activity() {
             view.translationX = 0f
             view.translationY = 0f
             view.translationZ = 0f
-            val row = Regex("^[A-Z]+([0-9]+)$").matchEntire(address)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-            view.layoutParams = (view.layoutParams ?: LinearLayout.LayoutParams(dp(39), dp(24))).apply {
-                width = dp(lastColumnWidths.getOrElse(columnIndex(address.takeWhile { it.isLetter() }) ) { 39 })
-                height = dp(if (row in wrappedRows) 52 else 24)
-            }
+            view.setTextScaleX(1f)
+            val originalTextSize = mergedOriginalTextSizes[view] ?: view.textSize
+            view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, originalTextSize)
         }
-
-        // Reset row elevations before applying the active sheet's merge overlays.
         for (i in 0 until grid.childCount) {
             (grid.getChildAt(i) as? LinearLayout)?.translationZ = 0f
         }
-
         mergedRangesBySheet[sheetName].orEmpty().forEach { range ->
             val parts = range.split(":")
             if (parts.size != 2) return@forEach
@@ -1469,25 +1476,24 @@ class MainActivity : Activity() {
             val baseHeight = dp(if (r1 in wrappedRows) 52 else 24).coerceAtLeast(1)
             val mergedWidth = if (horizontal) (c1..c2).sumOf { dp(lastColumnWidths.getOrElse(it) { 39 }) } else baseWidth
             val mergedHeight = if (vertical) (r1..r2).sumOf { dp(if (it in wrappedRows) 52 else 24) } else baseHeight
-
-            // Scaling changes only drawing, not LinearLayout's measurement; therefore
-            // following columns/rows keep their original positions.
+            val scaleX = mergedWidth.toFloat() / baseWidth
+            val scaleY = mergedHeight.toFloat() / baseHeight
             anchor.pivotX = 0f
             anchor.pivotY = 0f
-            anchor.scaleX = mergedWidth.toFloat() / baseWidth.toFloat()
-            anchor.scaleY = mergedHeight.toFloat() / baseHeight.toFloat()
+            anchor.scaleX = scaleX
+            anchor.scaleY = scaleY
+            // Counter-scale the glyphs so the merged cell grows but its text remains normal-sized.
+            anchor.setTextScaleX(1f / scaleX.coerceAtLeast(0.01f))
+            val originalTextSize = mergedOriginalTextSizes[anchor] ?: anchor.textSize
+            anchor.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, originalTextSize / scaleY.coerceAtLeast(0.01f))
             anchor.translationZ = dp(8).toFloat()
             anchor.bringToFront()
-
             if (horizontal) {
                 for (c in c1 + 1..c2) cellViews["${colName(c)}$r1"]?.visibility = android.view.View.INVISIBLE
             } else {
-                // Elevate the anchor row above following rows so the stretched cell is
-                // drawn over them. Row heights themselves remain unchanged.
-                val rowView = if (r1 == 1) frozenFirstRow else (2 until r1).let { _ ->
+                val rowView = if (r1 == 1) frozenFirstRow else
                     (0 until grid.childCount).asSequence().mapNotNull { grid.getChildAt(it) as? LinearLayout }
                         .firstOrNull { (it.tag as? Int) == r1 }
-                }
                 rowView?.translationZ = dp(8).toFloat()
                 for (r in r1 + 1..r2) cellViews["${colName(c1)}$r"]?.visibility = android.view.View.INVISIBLE
             }
@@ -2089,7 +2095,9 @@ class MainActivity : Activity() {
                 loaded.mergedRanges.forEach { (name, ranges) -> mergedRangesBySheet[name] = ranges.toMutableList() }
                 formulaDisplayCache.clear()
                 reportingMetadata = loaded.reportingMetadata
-                rowCount = max(50, sheets.values.flatMap { it.keys }.mapNotNull { Regex("[A-Z]+([0-9]+)").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 50)
+                val lastCellRow = sheets.values.flatMap { it.keys }.mapNotNull { Regex("[A-Z]+([0-9]+)").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 50
+                val lastMergeRow = mergedRangesBySheet.values.flatten().flatMap { it.split(":") }.mapNotNull { Regex("[A-Z]+([0-9]+)").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 50
+                rowCount = max(50, max(lastCellRow, lastMergeRow))
                 loaded.sheets.keys.forEach { styles.getOrPut(it) { mutableMapOf() } }
                 if (sheets.isEmpty()) { sheets["Sheet1"] = mutableMapOf(); styles["Sheet1"] = mutableMapOf() }
                 sheetName = sheets.keys.first(); selected = "A1"; render(); cellName.text=selected; formula.setText(data[selected].orEmpty())
