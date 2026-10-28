@@ -59,7 +59,7 @@ class PoiFormulaBridgeTest {
     }
 
     @Test fun supportsAbsoluteReferencesAndFormulaDependencies() {
-        val cells = mapOf("A1" to "10", "A2" to "20", "B1" to "=$A$1+$A$2", "B2" to "=B1*2")
+        val cells = mapOf("A1" to "10", "A2" to "20", "B1" to "=\$A\$1+\$A\$2", "B2" to "=B1*2")
         val result = PoiFormulaBridge.evaluate(cells, "C1", "B2+5")
         assertNotNull(result)
         assertEquals(65.0, result!!.number!!, 0.00001)
