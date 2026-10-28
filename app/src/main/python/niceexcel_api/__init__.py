@@ -1,1 +1,1 @@
-"""Nice Excel FastAPI backend prototype."""
+"""NiceExcel Flask backend."""

@@ -1,4 +1,4 @@
-"""Android entry point for the Nice Excel loopback FastAPI server.
+"""Android entry point for the Nice Excel loopback Flask server.
 
 All runtime writes are redirected to Android's writable app-private filesDir.
 The Python source/package directory is treated as read-only.
@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 def start_server(app_data_dir: str) -> None:
-    """Start Uvicorn on loopback and keep all workbook data in filesDir."""
+    """Start Flask on loopback and keep all workbook data in filesDir."""
     app_dir = Path(app_data_dir).expanduser().resolve()
     log_file = app_dir / "niceexcel_engine_startup.log"
 
@@ -46,7 +46,7 @@ def start_server(app_data_dir: str) -> None:
             probe.write_text("ok", encoding="utf-8")
             probe.unlink(missing_ok=True)
 
-        # StaticFiles needs a real writable directory; Android assets may be read-only.
+        # Flask serves a writable copy of the bundled UI; Android assets may be read-only.
         asset_index = app_dir / "niceexcel_asset_index.html"
         if not asset_index.is_file():
             raise FileNotFoundError(f"Web UI asset was not copied to app-private storage: {asset_index}")
@@ -75,29 +75,14 @@ def start_server(app_data_dir: str) -> None:
         logger.info("Writable temporary directory: %s", temp_dir)
         logger.info("Writable static directory: %s", static_dir)
 
-        import uvicorn
-        # Import only after setting paths, so module-level recovery/static paths
-        # are resolved to writable filesDir locations instead of bundled assets.
         from niceexcel_api.main import app
 
-        logger.info("Uvicorn version: %s", getattr(uvicorn, "__version__", "unknown"))
-        config = uvicorn.Config(
-            app,
-            host="127.0.0.1",
-            port=8765,
-            log_level="info",
-            access_log=False,
-            lifespan="on",
-        )
-        server = uvicorn.Server(config)
-        # Chaquopy starts this function from a background Java thread. Uvicorn's
-        # default signal-handler installation is only valid on Python's main
-        # thread and can abort startup on Android, leaving WebView blank.
-        server.install_signal_handlers = lambda: None
-        server.run()
-        if not server.started:
-            raise RuntimeError("Uvicorn stopped before the local server became ready")
-        logger.error("Uvicorn returned; the local server is no longer running")
+        logger.info("Flask version: %s", __import__("flask").__version__)
+        logger.info("Starting Flask on loopback 127.0.0.1:8765")
+        # Flask's development server is sufficient for this single-user, local-only
+        # Android WebView engine. Never bind to 0.0.0.0 or expose it to the LAN.
+        app.run(host="127.0.0.1", port=8765, debug=False, use_reloader=False, threaded=True)
+        logger.error("Flask returned; the local server is no longer running")
     except BaseException:
-        logger.error("FastAPI engine startup/runtime failure:\n%s", traceback.format_exc())
+        logger.error("Flask engine startup/runtime failure:\n%s", traceback.format_exc())
         raise

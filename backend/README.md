@@ -1,4 +1,4 @@
-# Nice Excel FastAPI backend
+# Nice Excel Flask backend
 
 Offline-first local API prototype for Nice Excel. This backend is currently runnable on a desktop Python installation; it is **not yet bundled into the Android APK**.
 
@@ -6,7 +6,7 @@ Offline-first local API prototype for Nice Excel. This backend is currently runn
 
 ```bash
 python -m pip install -r requirements.txt
-python -m uvicorn niceexcel_api.main:app --host 127.0.0.1 --port 8765
+python -c 'from niceexcel_api.main import app; app.run(host="127.0.0.1", port=8765, debug=False, use_reloader=False, threaded=True)'
 ```
 
 Open `http://127.0.0.1:8765/`. API documentation is available at `http://127.0.0.1:8765/docs`.
@@ -25,7 +25,7 @@ Open `http://127.0.0.1:8765/`. API documentation is available at `http://127.0.0
 - This is a prototype. Recovery files are stored on the computer/server running Python; Android app-private storage integration is a later task.
 - Formula calculation is a limited custom evaluator, not a complete Excel calculation engine. `openpyxl` preserves formula text but does not calculate Excel formulas itself.
 - Undo/redo, fill handle, data validation, conditional formatting, and full Excel chart-editing controls are not implemented in this phase.
-- For Android, FastAPI + Uvicorn + Pydantic's native dependencies must be verified with the selected embedded Python runtime before claiming an APK-integrated build. This phase intentionally does not change the native Kotlin app or its Gradle dependencies.
+- For Android, Flask + Flask + Pydantic's native dependencies must be verified with the selected embedded Python runtime before claiming an APK-integrated build. This phase intentionally does not change the native Kotlin app or its Gradle dependencies.
 - Keep the server bound to `127.0.0.1` for local use. Do not expose this prototype directly to a network without authentication and request security review.
 
 ## Tests

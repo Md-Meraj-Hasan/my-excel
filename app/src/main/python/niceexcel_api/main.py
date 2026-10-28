@@ -9,10 +9,8 @@ import uuid
 from copy import copy
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
-from starlette.background import BackgroundTask
-from fastapi.staticfiles import StaticFiles
+from .flask_compat import create_app, File, HTTPException, Query, UploadFile, FileResponse, StreamingResponse, BackgroundTask
+from flask import send_from_directory
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
@@ -23,14 +21,9 @@ from pydantic import BaseModel, Field
 from .formula_engine import calculate_cell
 from .dependency_graph import build_dependency_graph
 
-app = FastAPI(
-    title="Nice Excel Local API",
-    version="0.1.0",
-    description=(
-        "Offline-first workbook API prototype with a limited safe formula evaluator. "
-        "Formula strings are preserved; this is not full Excel compatibility."
-    ),
-)
+app = create_app(__name__)
+app.version = "0.1.0"
+app.config["JSON_SORT_KEYS"] = False
 
 # In-memory sessions for the first API milestone. The Android integration will
 # add app-private persistent storage and session recovery in a later milestone.
@@ -813,6 +806,17 @@ async def import_csv(book_id: str, sheet_name: str, file: UploadFile = File(...)
     return {"sheet": sheet_name, "rows": ws.max_row, "columns": ws.max_column, "autosaved": True}
 
 
-# Serve the Phase 2 browser UI from the same local-only FastAPI origin.
+# Serve the Phase 2 browser UI from the same local-only Flask origin.
 _STATIC_DIR = Path(os.environ.get("NICEEXCEL_STATIC_DIR", str(Path(__file__).parent / "static")))
-app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="nice-excel-ui")
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_niceexcel_ui(path):
+    """Serve the bundled UI from the same local-only Flask origin."""
+    if path and (Path(path).is_absolute() or ".." in Path(path).parts):
+        raise HTTPException(status_code=404, detail="File not found")
+    candidate = _STATIC_DIR / path if path else _STATIC_DIR / "index.html"
+    if candidate.is_file():
+        return send_from_directory(str(_STATIC_DIR), path or "index.html")
+    if not path or path.endswith("/"):
+        return send_from_directory(str(_STATIC_DIR), "index.html")
+    raise HTTPException(status_code=404, detail="File not found")

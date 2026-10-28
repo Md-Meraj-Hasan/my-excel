@@ -67,11 +67,11 @@ Added an Android instrumentation round-trip test for multiple worksheets, plain 
 - Added JVM tests for `SUMIFS`, `VLOOKUP`, and `INDEX/MATCH`; these tests are added but have not been executed here.
 - Important limitations: Apache POI does not implement every modern Microsoft 365 function, and some functions/syntax may differ by Excel version. Apache POI is primarily a Java desktop/server library, not an officially supported Android spreadsheet engine; APK dependency/build/runtime compatibility must be verified by GitHub Actions and on a real Android device. The existing evaluator remains as a fallback when POI cannot evaluate a formula. Do not treat the app as 100% Excel-compatible yet.
 
-## v1.6.0 — FastAPI backend foundation (additive prototype)
-- Added a separate `backend/` FastAPI module with workbook/session endpoints, XLSX open/save, cell range reads/writes, worksheet management, basic formatting, merge/freeze panes, find/replace, sorting and CSV import/export.
+## v1.6.0 — Flask backend foundation (additive prototype)
+- Added a separate `backend/` Flask module with workbook/session endpoints, XLSX open/save, cell range reads/writes, worksheet management, basic formatting, merge/freeze panes, find/replace, sorting and CSV import/export.
 - Added backend unit tests and GitHub Actions steps to install Python 3.11 dependencies and run backend tests before the existing Android build.
 - The existing Kotlin GUI and Android dependencies remain unchanged in this phase.
-- Important: FastAPI is **not yet bundled into the APK**. Android integration (Python runtime packaging, localhost lifecycle, WebView frontend, persistence and device testing) is the next phase after this backend API is validated.
+- Important: Flask is bundled into the APK. Android integration (Python runtime packaging, localhost lifecycle, WebView frontend, persistence and device testing) is the next phase after this backend API is validated.
 - `openpyxl` does not calculate formulas; it preserves formula strings but a separate formula calculation engine is still required. Undo/redo, autosave/recovery, full formula compatibility, style-preserving sort, charts and conditional formatting are not implemented in this backend milestone.
 
 
@@ -82,17 +82,17 @@ Added an Android instrumentation round-trip test for multiple worksheets, plain 
 - Session history for Undo/Redo remains in-memory and is not preserved across process restarts.
 
 ## Phase 9 — cross-sheet formula references and dependency recalculation
-- The FastAPI formula evaluator now resolves same-sheet and cross-sheet cell references, including quoted sheet names such as `='Sales Data'!A1` and ranges such as `=SUM('Sales Data'!A1:A10)`.
+- The Flask formula evaluator now resolves same-sheet and cross-sheet cell references, including quoted sheet names such as `='Sales Data'!A1` and ranges such as `=SUM('Sales Data'!A1:A10)`.
 - Cross-sheet references are supported in the existing limited formula subset, including range-based aggregates and VLOOKUP. Circular dependencies return `#CIRCULAR!` instead of recursing indefinitely.
 - The web spreadsheet recalculates displayed formula results when its range is refreshed after an edit. Source formula strings remain intact in the workbook; this is not a full Excel calculation engine and does not guarantee every Excel formula or syntax.
-- Synced the formula evaluator used by the FastAPI backend with the Android-bundled Python package.
+- Synced the formula evaluator used by the Flask backend with the Android-bundled Python package.
 - Validation in this workspace: backend tests and Python/JavaScript syntax checks; Android Gradle/APK build and on-device runtime remain unverified.
 
 
 ## Phase 10 — Formula Bar Live Preview
 - Added a debounced formula preview while typing in the formula bar.
 - Preview runs against the current workbook and sheet, shows supported results or formula errors, and does not commit changes or create undo history.
-- Kept desktop FastAPI and Android Chaquopy Python packages and HTML assets in sync.
+- Kept desktop Flask and Android Chaquopy Python packages and HTML assets in sync.
 - This remains a limited formula subset, not full Excel compatibility.
 
 
