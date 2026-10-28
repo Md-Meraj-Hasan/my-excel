@@ -122,8 +122,13 @@ class FlaskActivity : Activity() {
                 }
             }.apply { name = "NiceExcel-EngineBootstrap"; isDaemon = true; start() }
         } catch (e: Exception) {
+            val detail = Log.getStackTraceString(e)
             Log.e("NiceExcelWebEngine", "Unable to initialize Web Engine screen", e)
-            Toast.makeText(this, "Python runtime could not start: ${e.message}", Toast.LENGTH_LONG).show()
+            try { engineLogFile.appendText("\n=== Web Engine initialization failure ===\n$detail\n") } catch (_: Exception) { }
+            loadingText.visibility = android.view.View.VISIBLE
+            loadingText.text = "Offline Excel engine could not initialize.\n\n" + detail.takeLast(5000) +
+                "\n\nStartup log: files/niceexcel_engine_startup.log"
+            Toast.makeText(this, "Python runtime could not start. Error details are shown on screen.", Toast.LENGTH_LONG).show()
         }
     }
 

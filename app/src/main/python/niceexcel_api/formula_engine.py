@@ -257,13 +257,53 @@ class Evaluator:
                     if found is None: raise FormulaError('#N/A')
                     return self.cell(f'{__import__("openpyxl").utils.get_column_letter(left+idx-1)}{found}', target_sheet)
                 if len(args) not in (3, 4, 5, 6): raise FormulaError('#VALUE!')
-                lookup = self.arg(args[0]); lookup_vals = self.range(args[1]); return_vals = self.range(args[2])
+                lookup = self.arg(args[0])
+                lookup_vals = self.range(args[1])
+                return_vals = self.range(args[2])
                 if len(lookup_vals) != len(return_vals): raise FormulaError('#VALUE!')
-                match_mode = int(self.arg(args[4])) if len(args) >= 5 else 0
                 not_found = self.arg(args[3]) if len(args) >= 4 else FormulaError('#N/A').code
-                for a,b in zip(lookup_vals, return_vals):
-                    if a == lookup or (match_mode == 2 and isinstance(a,str) and isinstance(lookup,str) and re.fullmatch(lookup.replace('*','.*').replace('?','.'),a,re.I)):
-                        return b
+                match_mode = int(self.arg(args[4])) if len(args) >= 5 else 0
+                search_mode = int(self.arg(args[5])) if len(args) >= 6 else 1
+                if match_mode not in (-1, 0, 1, 2): raise FormulaError('#VALUE!')
+                if search_mode not in (-2, -1, 1, 2): raise FormulaError('#VALUE!')
+
+                def comparable(value):
+                    if value is None: return ''
+                    if isinstance(value, str):
+                        stripped = value.strip()
+                        if stripped:
+                            try: return float(stripped)
+                            except ValueError: return stripped.casefold()
+                        return ''
+                    if isinstance(value, bool): return value
+                    if isinstance(value, (int, float)): return float(value)
+                    return str(value).casefold()
+
+                def exact_match(value):
+                    left, right = comparable(value), comparable(lookup)
+                    if left == right: return True
+                    if match_mode == 2 and isinstance(lookup, str):
+                        pattern = re.escape(lookup).replace(r'\*', '.*').replace(r'\?', '.')
+                        return re.fullmatch(pattern, '' if value is None else str(value), re.I) is not None
+                    return False
+
+                indices = range(len(lookup_vals) - 1, -1, -1) if search_mode == -1 else range(len(lookup_vals))
+                for i in indices:
+                    if exact_match(lookup_vals[i]): return return_vals[i]
+
+                if match_mode in (-1, 1):
+                    target = comparable(lookup)
+                    candidates = []
+                    for i, value in enumerate(lookup_vals):
+                        candidate = comparable(value)
+                        try:
+                            eligible = candidate <= target if match_mode == -1 else candidate >= target
+                            if eligible: candidates.append((candidate, i))
+                        except TypeError:
+                            continue
+                    if candidates:
+                        chosen = max(candidates, key=lambda item: item[0]) if match_mode == -1 else min(candidates, key=lambda item: item[0])
+                        return return_vals[chosen[1]]
                 return not_found
             if fn == 'MATCH':
                 if len(args) not in (2,3): raise FormulaError('#VALUE!')
