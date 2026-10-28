@@ -603,7 +603,7 @@ class MainActivity : Activity() {
             }
             sheetTabs.addView(t)
         }
-        sheetTabs.addView(tool("+") { addSheet() }.apply { setTextColor(Color.rgb(17,94,57)) })
+        sheetTabs.addView(tool("+") { sheetOptionsMenu() }.apply { setTextColor(Color.rgb(17,94,57)) })
     }
 
     private fun addOneRow() {
@@ -764,7 +764,7 @@ class MainActivity : Activity() {
     }
 
     private fun formulaPickerMenu() {
-        val formulas = arrayOf("SUM", "AVERAGE", "COUNT", "COUNTA", "MAX", "MIN", "MEDIAN", "PRODUCT", "IF", "IFERROR", "IFNA", "AND", "OR", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "SQRT", "POWER", "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS", "AVERAGEIF", "AVERAGEIFS", "MINIFS", "MAXIFS", "CONCAT", "CONCATENATE", "LEFT", "RIGHT", "MID", "LEN", "TRIM", "UPPER", "LOWER", "PROPER", "TODAY", "NOW", "DATE", "YEAR", "MONTH", "DAY")
+        val formulas = arrayOf("SUM", "AVERAGE", "COUNT", "COUNTA", "MAX", "MIN", "MEDIAN", "PRODUCT", "IF", "IFERROR", "IFNA", "AND", "OR", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "SQRT", "POWER", "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS", "AVERAGEIF", "AVERAGEIFS", "MINIFS", "MAXIFS", "CONCAT", "CONCATENATE", "XLOOKUP", "VLOOKUP", "HLOOKUP", "LOOKUP", "INDEX", "MATCH", "CHOOSE", "OFFSET", "INDIRECT", "LEFT", "RIGHT", "MID", "LEN", "TRIM", "UPPER", "LOWER", "PROPER", "TODAY", "NOW", "DATE", "YEAR", "MONTH", "DAY")
         AlertDialog.Builder(this).setTitle("Choose formula")
             .setItems(formulas) { _, which ->
                 formula.setText("=" + formulas[which] + "(")
@@ -820,6 +820,45 @@ class MainActivity : Activity() {
         while(sheets.containsKey(name)) { n++; name="Sheet$n" }
         sheets[name]=mutableMapOf(); sheetName=name; selected="A1"; render(); cellName.text=selected; formula.setText("")
     }
+    private fun sheetOptionsMenu() {
+        val options = arrayOf("+ Sheet", "Rename current sheet", "Delete current sheet")
+        AlertDialog.Builder(this)
+            .setTitle("Sheet options • $sheetName")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> addSheet()
+                    1 -> renameSheet(sheetName)
+                    2 -> deleteCurrentSheet()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun deleteCurrentSheet() {
+        if (sheets.size <= 1) {
+            status.text = "At least one sheet must remain"
+            return
+        }
+        val deleting = sheetName
+        AlertDialog.Builder(this)
+            .setTitle("Delete sheet?")
+            .setMessage("Delete '$deleting' and its cell data? This cannot be undone.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ ->
+                sheets.remove(deleting)
+                styles.remove(deleting)
+                wrappedRowsBySheet.remove(deleting)
+                sheetName = sheets.keys.first()
+                selected = "A1"
+                cellName.text = selected
+                formula.setText(data[selected].orEmpty())
+                render()
+                status.text = "Deleted sheet: $deleting"
+            }
+            .show()
+    }
+
     private fun renameSheet(old:String) {
         val input=EditText(this).apply { setText(old) }
         AlertDialog.Builder(this).setTitle("Rename worksheet").setView(input)
@@ -1109,7 +1148,8 @@ class MainActivity : Activity() {
             "Format first row as heading",
             "Apply table style to selected row",
             "Apply THICK borders to used data range",
-            "Remove table styling"
+            "Remove table styling",
+            "Clear first-row heading"
         )
         AlertDialog.Builder(this).setTitle("Table and borders").setItems(opts) { _, i ->
             val row = Regex("[A-Z]+([0-9]+)").matchEntire(selected)?.groupValues?.get(1)?.toIntOrNull() ?: 1
@@ -1144,6 +1184,23 @@ class MainActivity : Activity() {
                     sheetStyles.values.forEach { st -> st.border = false; st.thickBorder = false }
                     sheetStyles.clear(); tableHeaderRow = null
                     status.text = "Table styling removed"
+                }
+                4 -> {
+                    val headingRow = tableHeaderRow ?: row
+                    val lastCol = usedRange().second
+                    for (c in 0..lastCol) {
+                        val address = "${colName(c)}$headingRow"
+                        val st = sheetStyles[address] ?: continue
+                        st.bold = false
+                        st.fillColor = Color.WHITE
+                        st.textColor = Color.BLACK
+                        st.border = false
+                        st.thickBorder = false
+                        st.alignment = "GENERAL"
+                        if (st == CellStyle()) sheetStyles.remove(address)
+                    }
+                    tableHeaderRow = null
+                    status.text = "Heading formatting cleared for row $headingRow"
                 }
             }
             render()
