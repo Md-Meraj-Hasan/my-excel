@@ -20,7 +20,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /** Optional Flask-powered web spreadsheet. Existing native workbook UI remains available. */
-class FastApiActivity : Activity() {
+class FlaskActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var loadingText: TextView
     private val localUrl = "http://127.0.0.1:8765/"
@@ -51,7 +51,7 @@ class FastApiActivity : Activity() {
                         mainFrameErrorShown = true
                         loadingText.text = "Excel Web Engine failed to load. Go back and try Web again."
                         loadingText.visibility = android.view.View.VISIBLE
-                        Toast.makeText(this@FastApiActivity, "Excel Web Engine connection failed. Go back and try Web again.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@FlaskActivity, "Excel Web Engine connection failed. Go back and try Web again.", Toast.LENGTH_LONG).show()
                     }
                 }
             }

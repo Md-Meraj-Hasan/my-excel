@@ -243,7 +243,7 @@ class MainActivity : Activity() {
             )
             "Formula" -> listOf("Formula help" to { formulaHelp() })
             else -> listOf(
-                "Web Engine" to { startActivity(Intent(this, FastApiActivity::class.java)) },
+                "Web Engine" to { startActivity(Intent(this, FlaskActivity::class.java)) },
                 "Workbook info" to { status.text = "${sheets.size} sheet(s) • $rowCount rows • Offline workbook" }
             )
         }

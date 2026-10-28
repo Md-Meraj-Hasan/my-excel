@@ -35,7 +35,7 @@ def test_cells_sheets_style_and_save_roundtrip():
     assert client.post(f'/workbooks/{book_id}/sheets', json={'name': 'Forecast'}).status_code == 200
     info = client.get(f'/workbooks/{book_id}').get_json()
     assert [s['name'] for s in info['sheets']] == ['Sheet1', 'Forecast']
-    cells = client.get(f'/workbooks/{book_id}/range', params={'sheet': 'Sheet1', 'range': 'A1:B2'}).get_json()
+    cells = client.get(f'/workbooks/{book_id}/range', query_string={'sheet': 'Sheet1', 'range': 'A1:B2'}).get_json()
     assert cells['rows'][0][0]['value'] == 'Revenue'
     assert cells['rows'][0][0]['style']['bold'] is True
     assert cells['rows'][1][1]['value'] == '=SUM(B1:B1)'
@@ -55,7 +55,7 @@ def test_insert_row_shifts_existing_cells_and_autosaves():
     response = client.post(f"/workbooks/{book_id}/rows", json={"sheet": "Sheet1", "row": 2})
     assert response.status_code == 200, response.get_data(as_text=True)
     assert response.get_json()["inserted_row"] == 2
-    rows = client.get(f"/workbooks/{book_id}/range", params={"sheet": "Sheet1", "range": "A1:A3"}).get_json()["rows"]
+    rows = client.get(f"/workbooks/{book_id}/range", query_string={"sheet": "Sheet1", "range": "A1:A3"}).get_json()["rows"]
     assert rows[0][0]["value"] == "Header"
     assert rows[1][0]["value"] is None
     assert rows[2][0]["value"] == "Keep me"
@@ -65,14 +65,14 @@ def test_last_sheet_cannot_be_deleted_and_bad_range_rejected():
     book_id = client.post('/workbooks', json={}).get_json()['workbook_id']
     response = client.delete(f'/workbooks/{book_id}/sheets/Sheet1')
     assert response.status_code == 409
-    response = client.get(f'/workbooks/{book_id}/range', params={'sheet': 'Sheet1', 'range': 'not-a-range'})
+    response = client.get(f'/workbooks/{book_id}/range', query_string={'sheet': 'Sheet1', 'range': 'not-a-range'})
     assert response.status_code == 422
 
 
 def test_formula_text_is_preserved_and_subset_result_is_calculated():
     book_id = client.post('/workbooks', json={}).get_json()['workbook_id']
     client.patch(f'/workbooks/{book_id}/cells', json={'sheet': 'Sheet1', 'cells': [{'cell': 'A1', 'value': '=SUM(1,2)'}]})
-    cell = client.get(f'/workbooks/{book_id}/range', params={'sheet': 'Sheet1', 'range': 'A1:A1'}).get_json()['rows'][0][0]
+    cell = client.get(f'/workbooks/{book_id}/range', query_string={'sheet': 'Sheet1', 'range': 'A1:A1'}).get_json()['rows'][0][0]
     assert cell['value'] == '=SUM(1,2)'
     assert cell['calculated_value'] == 3.0
     assert client.get(f'/workbooks/{book_id}').get_json()['formula_calculation'] == 'limited_nice_excel_subset_evaluator'
@@ -95,7 +95,7 @@ def test_formula_engine_calculates_basic_functions_and_references():
         {'cell': 'B4', 'value': '=SUMIF(A1:A2,">10",A1:A2)'},
         {'cell': 'B5', 'value': '=A1+A2*2'},
     ]})
-    rows = client.get(f'/workbooks/{book_id}/range', params={'sheet': 'Sheet1', 'range': 'B1:B5'}).get_json()['rows']
+    rows = client.get(f'/workbooks/{book_id}/range', query_string={'sheet': 'Sheet1', 'range': 'B1:B5'}).get_json()['rows']
     assert [row[0]['calculated_value'] for row in rows] == [30.0, 'Yes', 1, 20.0, 50]
     assert rows[0][0]['value'] == '=SUM(A1:A2)'  # formula text is preserved
 
@@ -110,7 +110,7 @@ def test_formula_engine_lookup_and_formula_errors():
         {'cell': 'D3', 'value': '=SUM(A1:A2)'},
         {'cell': 'D4', 'value': '=1/0'},
     ]})
-    rows = client.get(f'/workbooks/{book_id}/range', params={'sheet': 'Sheet1', 'range': 'D1:D4'}).get_json()['rows']
+    rows = client.get(f'/workbooks/{book_id}/range', query_string={'sheet': 'Sheet1', 'range': 'D1:D4'}).get_json()['rows']
     assert rows[0][0]['calculated_value'] == 18
     assert rows[1][0]['calculated_value'] == 12
     assert rows[2][0]['calculated_value'] == 0
@@ -126,7 +126,7 @@ def test_autosave_recovers_workbook_after_session_cache_is_cleared():
     assert changed.status_code == 200
     assert changed.get_json()['autosaved'] is True
     _workbooks.clear()  # simulate an API process restart/session cache loss
-    recovered = client.get(f'/workbooks/{book_id}/range', params={
+    recovered = client.get(f'/workbooks/{book_id}/range', query_string={
         'sheet': 'Recovery', 'range': 'A1:A1'
     })
     assert recovered.status_code == 200
@@ -156,13 +156,13 @@ def test_undo_redo_cell_edit_roundtrip():
     book_id = client.post('/workbooks', json={}).get_json()['workbook_id']
     client.patch(f'/workbooks/{book_id}/cells', json={'sheet': 'Sheet1', 'cells': [{'cell': 'A1', 'value': 'before'}]})
     client.patch(f'/workbooks/{book_id}/cells', json={'sheet': 'Sheet1', 'cells': [{'cell': 'A1', 'value': 'after'}]})
-    assert client.get(f'/workbooks/{book_id}/range', params={'sheet': 'Sheet1', 'range': 'A1:A1'}).get_json()['rows'][0][0]['value'] == 'after'
+    assert client.get(f'/workbooks/{book_id}/range', query_string={'sheet': 'Sheet1', 'range': 'A1:A1'}).get_json()['rows'][0][0]['value'] == 'after'
     undone = client.post(f'/workbooks/{book_id}/undo')
     assert undone.status_code == 200 and undone.get_json()['undone'] is True
-    assert client.get(f'/workbooks/{book_id}/range', params={'sheet': 'Sheet1', 'range': 'A1:A1'}).get_json()['rows'][0][0]['value'] == 'before'
+    assert client.get(f'/workbooks/{book_id}/range', query_string={'sheet': 'Sheet1', 'range': 'A1:A1'}).get_json()['rows'][0][0]['value'] == 'before'
     redone = client.post(f'/workbooks/{book_id}/redo')
     assert redone.status_code == 200 and redone.get_json()['redone'] is True
-    assert client.get(f'/workbooks/{book_id}/range', params={'sheet': 'Sheet1', 'range': 'A1:A1'}).get_json()['rows'][0][0]['value'] == 'after'
+    assert client.get(f'/workbooks/{book_id}/range', query_string={'sheet': 'Sheet1', 'range': 'A1:A1'}).get_json()['rows'][0][0]['value'] == 'after'
 
 
 def test_undo_reports_empty_history_without_error():
@@ -182,7 +182,7 @@ def test_explicit_recovery_restore_endpoint_reloads_saved_workbook():
     restored = client.post(f'/recovery/{book_id}/restore')
     assert restored.status_code == 200
     assert restored.get_json()['restored'] is True
-    value = client.get(f'/workbooks/{book_id}/range', params={
+    value = client.get(f'/workbooks/{book_id}/range', query_string={
         'sheet': 'SavedBook', 'range': 'C3:C3'
     }).get_json()['rows'][0][0]['value']
     assert value == 'persisted'
@@ -233,7 +233,7 @@ def test_phase8_calculate_workbook_endpoint_evaluates_formulas_and_autosaves():
     values = {item['cell']: item['calculated_value'] for item in data['results']}
     assert values == {'B1': 15, 'B2': 'fallback', 'B3': '#NAME?'}
     assert data['autosaved'] is True
-    saved = client.get(f'/workbooks/{book_id}/range', params={'sheet': 'Calc', 'range': 'B1:B3'}).get_json()
+    saved = client.get(f'/workbooks/{book_id}/range', query_string={'sheet': 'Calc', 'range': 'B1:B3'}).get_json()
     assert saved['rows'][0][0]['value'] == '=SUM(A1:A2)'  # formulas stay intact
 
 
@@ -252,7 +252,7 @@ def test_phase9_cross_sheet_references_and_live_dependency_recalculation():
     ]})
     def values():
         return [r[0]['calculated_value'] for r in client.get(
-            f'/workbooks/{book_id}/range', params={'sheet': 'Summary', 'range': 'A1:A3'}
+            f'/workbooks/{book_id}/range', query_string={'sheet': 'Summary', 'range': 'A1:A3'}
         ).get_json()['rows']]
     assert values() == [10, 30.0, 25]
     # Changing the source cell automatically changes dependent results on the next refresh.
@@ -271,7 +271,7 @@ def test_phase9_cross_sheet_lookup_and_circular_reference_detection():
         {'cell': 'A1', 'value': "=VLOOKUP(\"Apple\",'Data Sheet'!A1:B1,2,FALSE)"},
         {'cell': 'B1', 'value': '=C1'}, {'cell': 'C1', 'value': '=B1'},
     ]})
-    rows = client.get(f'/workbooks/{book_id}/range', params={'sheet': 'Calc', 'range': 'A1:C1'}).get_json()['rows'][0]
+    rows = client.get(f'/workbooks/{book_id}/range', query_string={'sheet': 'Calc', 'range': 'A1:C1'}).get_json()['rows'][0]
     assert rows[0]['calculated_value'] == 42
     assert rows[1]['calculated_value'] == '#CIRCULAR!'
     assert rows[2]['calculated_value'] == '#CIRCULAR!'
@@ -290,7 +290,7 @@ def test_formula_preview_evaluates_without_committing_cell_or_history():
     assert response.status_code == 200
     assert response.get_json()['calculated_value'] == 36
     assert response.get_json()['preview_only'] is True
-    assert client.get(f'/workbooks/{book_id}/range', params={'sheet':'Sheet1','range':'B1:B1'}).get_json()['rows'][0][0]['value'] == '=A1*2'
+    assert client.get(f'/workbooks/{book_id}/range', query_string={'sheet':'Sheet1','range':'B1:B1'}).get_json()['rows'][0][0]['value'] == '=A1*2'
     assert len(_undo_history.get(book_id, [])) == history_before
 
 
@@ -382,7 +382,7 @@ def test_retrieve_data_copies_all_matching_rows_to_destination_sheet():
         'lookup_ids':['102','105','108'],'destination_sheet':'Sheet2','destination_cell':'A1'})
     assert response.status_code == 200, response.get_data(as_text=True)
     assert response.get_json()['matched_rows'] == 3
-    rows = client.get(f'/workbooks/{book_id}/range', params={'sheet':'Sheet2','range':'A1:D3'}).get_json()['rows']
+    rows = client.get(f'/workbooks/{book_id}/range', query_string={'sheet':'Sheet2','range':'A1:D3'}).get_json()['rows']
     assert rows[0][0]['value'] == 102 and rows[0][1]['value'] == 'Ahmed'
     assert rows[1][1]['value'] == 'Sara'
     assert rows[2][1]['value'] == 'Ahmed-2'
@@ -412,7 +412,7 @@ def test_filter_formula_returns_matching_rows_and_calculate_spills_results():
     ]})
     calc = client.post(f'/workbooks/{book_id}/calculate')
     assert calc.status_code == 200, calc.get_data(as_text=True)
-    rows = client.get(f'/workbooks/{book_id}/range',params={'sheet':'Sheet2','range':'C1:D2'}).get_json()['rows']
+    rows = client.get(f'/workbooks/{book_id}/range',query_string={'sheet':'Sheet2','range':'C1:D2'}).get_json()['rows']
     assert rows[0][0]['calculated_value'] == [[102, 'Ahmed'], [105, 'Sara']]
     assert rows[0][1]['value'] == 'Ahmed'
     assert rows[1][0]['value'] == 105
