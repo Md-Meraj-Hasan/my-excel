@@ -57,6 +57,10 @@ class MainActivity : Activity() {
     private var pendingCsv = ""
     private var selectedCellView: TextView? = null
     private val cellViews = mutableMapOf<String, TextView>()
+    // Cache each cell view's rendered background signature. Sheet switching often reuses
+    // the same 1,300 TextViews; do not allocate a new GradientDrawable when its appearance
+    // (fill, border, selection state) has not actually changed.
+    private val appliedCellBackgrounds = java.util.WeakHashMap<TextView, String>()
     // Formula results are expensive (POI + fallback evaluator); reuse them across style-only renders.
     private val formulaDisplayCache = mutableMapOf<String, String>()
     // CPU-heavy data operations run off the UI thread; Android views are updated only on main.
@@ -281,7 +285,13 @@ class MainActivity : Activity() {
                 "Find / Replace…" to { findReplaceMenu() }
             )
             "Insert" -> listOf(
-                "Table tools…" to { tableMenu() }, "Merge / table heading tools…" to { tableMenu() }
+                "Add row at bottom" to { addRows(1) },
+                "Add 5 rows at bottom" to { addRows(5) },
+                "Add 10 rows at bottom" to { addRows(10) },
+                "Duplicate selected row to bottom" to { duplicateSelectedRowToBottom() },
+                "Clear selected row…" to { clearSelectedRowConfirm() },
+                "Table tools…" to { tableMenu() },
+                "Merge / table heading tools…" to { tableMenu() }
             )
             "Format" -> listOf(
                 "Format cells…" to { formattingMenu() },
@@ -659,6 +669,7 @@ class MainActivity : Activity() {
 
         // For a newly created blank sheet, avoid formula evaluation and expensive style lookups.
         val blankSheet = data.isEmpty() && sheetStyles.isEmpty() && wrappedRows.isEmpty()
+        val cellRefreshStarted = SystemClock.elapsedRealtime()
         val addressPattern = Regex("^[A-Z]+(\\d+)$")
         for ((address, view) in cellViews) {
             val match = addressPattern.matchEntire(address)
@@ -678,7 +689,8 @@ class MainActivity : Activity() {
             if (view.gravity != gravity) view.gravity = gravity
             val maxLines = if (row in wrappedRows) 2 else 1
             if (view.maxLines != maxLines) view.maxLines = maxLines
-            view.ellipsize = if (maxLines == 2) null else android.text.TextUtils.TruncateAt.END
+            val desiredEllipsize = if (maxLines == 2) null else android.text.TextUtils.TruncateAt.END
+            if (view.ellipsize != desiredEllipsize) view.ellipsize = desiredEllipsize
             applyCellBackground(view, address, false)
         }
 
@@ -701,11 +713,14 @@ class MainActivity : Activity() {
                 }
             }
         }
+        val cellRefreshMs = SystemClock.elapsedRealtime() - cellRefreshStarted
         frozenRowHorizontal.visibility = android.view.View.VISIBLE
         selectedCellView = cellViews[selected]
+        val tabsStarted = SystemClock.elapsedRealtime()
         renderTabs()
+        val tabsMs = SystemClock.elapsedRealtime() - tabsStarted
         grid.requestLayout()
-        Log.d("NiceExcelPerf", "sheetSwitchFast sheet=$sheetName blank=$blankSheet ms=${SystemClock.elapsedRealtime() - started}")
+        Log.d("NiceExcelPerf", "sheetSwitchFast sheet=$sheetName blank=$blankSheet cellRefreshMs=$cellRefreshMs tabsMs=$tabsMs totalMs=${SystemClock.elapsedRealtime() - started}")
         return true
     }
 
@@ -905,18 +920,82 @@ class MainActivity : Activity() {
         sheetTabs.addView(tool("+") { sheetOptionsMenu() }.apply { setTextColor(Color.rgb(17,94,57)) })
     }
 
-    private fun addOneRow() {
-        rowCount += 1
-        if (filterColumn != null && filterText != null) {
-            render()
+    private fun addOneRow() = addRows(1)
+
+    /** Add rows at the end in one operation, rendering at most once for a batch. */
+    private fun addRows(count: Int) {
+        if (count <= 0) return
+        val started = SystemClock.elapsedRealtime()
+        val oldCount = rowCount
+        rowCount += count
+        // Batch updates use one render so Add 5/10 does not repeatedly rebuild the UI.
+        // If filtering is active, the full render keeps row visibility consistent.
+        val fast = filterColumn == null || filterText == null
+        if (fast) {
+            for (row in (oldCount + 1)..rowCount) {
+                // The add-row footer was removed; append after the last real grid row.
+                grid.addView(createRowView(row, lastColumnWidths), grid.childCount)
+            }
         } else {
-            // Insert just the new row immediately before the add-row bar. Existing cells,
-            // selection and scroll position are retained; no full-grid reconstruction.
-            val insertAt = (grid.childCount - 1).coerceAtLeast(1)
-            grid.addView(createRowView(rowCount, lastColumnWidths), insertAt)
+            render()
         }
-        status.text = "Added row $rowCount"
+        status.text = if (count == 1) "Added row $rowCount" else "Added $count rows ($oldCount → $rowCount)"
+        Log.d("NiceExcelPerf", "addRows count=$count totalMs=${SystemClock.elapsedRealtime() - started} fastPath=$fast")
         verticalScroll.post { verticalScroll.smoothScrollTo(0, grid.height) }
+    }
+
+    private fun duplicateSelectedRowToBottom() {
+        val match = Regex("^[A-Z]+(\\d+)$").matchEntire(selected)
+        val sourceRow = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+        if (sourceRow == null || sourceRow !in 1..rowCount) {
+            status.text = "Select a valid cell first"
+            return
+        }
+        val targetRow = rowCount + 1
+        val copiedValues = mutableMapOf<String, String>()
+        val copiedStyles = mutableMapOf<String, CellStyle>()
+        for (column in 0 until colLimit) {
+            val col = colName(column)
+            val sourceAddress = "$col$sourceRow"
+            val targetAddress = "$col$targetRow"
+            data[sourceAddress]?.let { copiedValues[targetAddress] = it }
+            sheetStyles[sourceAddress]?.let { copiedStyles[targetAddress] = it.copy() }
+        }
+        // Prepare row data first, then rebuild once so copied values/styles appear together.
+        rowCount = targetRow
+        data.putAll(copiedValues)
+        sheetStyles.putAll(copiedStyles)
+        formulaDisplayCache.clear()
+        selected = "A$targetRow"
+        cellName.text = selected
+        formula.setText(data[selected].orEmpty())
+        render()
+        status.text = "Duplicated row $sourceRow to row $targetRow"
+    }
+
+    private fun clearSelectedRowConfirm() {
+        val row = Regex("^[A-Z]+(\\d+)$").matchEntire(selected)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        if (row == null || row !in 1..rowCount) {
+            status.text = "Select a valid cell first"
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Clear row $row?")
+            .setMessage("This clears values and formatting in row $row. This action cannot be undone.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Clear") { _, _ ->
+                for (column in 0 until colLimit) {
+                    val address = "${colName(column)}$row"
+                    data.remove(address)
+                    sheetStyles.remove(address)
+                }
+                wrappedRows.remove(row)
+                formulaDisplayCache.clear()
+                render()
+                formula.setText(data[selected].orEmpty())
+                status.text = "Cleared row $row"
+            }
+            .show()
     }
 
     private fun applyCellBackground(view: TextView, address: String?, header: Boolean) {
@@ -939,10 +1018,13 @@ class MainActivity : Activity() {
             st?.border == true && st.thickBorder -> 2
             else -> 1
         }
+        val signature = "$fill|$strokeColor|$strokeWidth"
+        if (appliedCellBackgrounds[view] == signature) return
         view.background = android.graphics.drawable.GradientDrawable().apply {
             setColor(fill)
             setStroke(if (strokeWidth == 1) 1 else dp(strokeWidth), strokeColor)
         }
+        appliedCellBackgrounds[view] = signature
     }
 
     private fun selectColumn(column: Int) {
