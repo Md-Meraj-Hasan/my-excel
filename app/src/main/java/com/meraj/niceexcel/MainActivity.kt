@@ -12,6 +12,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
+import android.widget.FrameLayout
 import java.util.Locale
 import kotlin.math.max
 
@@ -165,7 +166,7 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, 0)
             clipToPadding = false
             clipChildren = false
-            addView(columnHeader, HorizontalScrollView.LayoutParams(-2, dp(24)))
+            addView(columnHeader, FrameLayout.LayoutParams(-2, dp(24)))
         }
         root.addView(headerHorizontal, LinearLayout.LayoutParams(-1, dp(24)).apply {
             setMargins(0, 0, 0, 0)
@@ -182,7 +183,7 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, 0)
             clipToPadding = false
             clipChildren = false
-            addView(frozenFirstRow, HorizontalScrollView.LayoutParams(-2, dp(24)))
+            addView(frozenFirstRow, FrameLayout.LayoutParams(-2, dp(24)))
         }
         root.addView(frozenRowHorizontal, LinearLayout.LayoutParams(-1, dp(24)).apply {
             setMargins(0, 0, 0, 0)
