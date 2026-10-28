@@ -1193,7 +1193,8 @@ class MainActivity : Activity() {
                         val st = sheetStyles[address] ?: continue
                         st.bold = false
                         st.fillColor = Color.WHITE
-                        st.textColor = Color.BLACK
+                        // Match CellStyle() defaults so cleared heading styles can be removed.
+                        st.textColor = Color.rgb(24, 32, 39)
                         st.border = false
                         st.thickBorder = false
                         st.alignment = Gravity.CENTER_VERTICAL or Gravity.START
