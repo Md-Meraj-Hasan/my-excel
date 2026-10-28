@@ -122,6 +122,15 @@ class FormulaPreviewRequest(BaseModel):
     formula: str = Field(max_length=10000)
 
 
+class RetrieveDataRequest(BaseModel):
+    source_sheet: str = Field(min_length=1, max_length=31)
+    source_range: str = Field(default="A1:D1000", min_length=2, max_length=100)
+    match_column: str = Field(default="A", pattern=r"^[A-Za-z]{1,3}$")
+    lookup_ids: list[Any] = Field(min_length=1, max_length=5000)
+    destination_sheet: str = Field(min_length=1, max_length=31)
+    destination_cell: str = Field(default="A1", pattern=r"^[A-Za-z]{1,3}[1-9][0-9]*$")
+
+
 class RowInsertRequest(BaseModel):
     sheet: str = "Sheet1"
     row: int = Field(ge=1, le=100000)
@@ -350,6 +359,55 @@ def update_cells(book_id: str, request: UpdateCellsRequest):
         ws[item.cell.upper()] = _safe_value(item.value)
     _persist_workbook(book_id)
     return {"updated": len(request.cells), "sheet": request.sheet, "autosaved": True}
+
+
+@app.post("/workbooks/{book_id}/retrieve-data")
+def retrieve_data(book_id: str, request: RetrieveDataRequest):
+    """Copy every source row whose match-column value is in lookup_ids to a destination range."""
+    wb = _book(book_id)
+    source = _sheet(wb, request.source_sheet)
+    if request.destination_sheet in wb.sheetnames:
+        destination = wb[request.destination_sheet]
+    else:
+        name = request.destination_sheet.strip()
+        if not name or any(ch in name for ch in r"[]:*?/\\"):
+            raise HTTPException(status_code=422, detail="Invalid destination worksheet name")
+        destination = None
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(request.source_range)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Invalid source range; use a range such as A1:D1000") from exc
+    if not min_col or not min_row or not max_col or not max_row or (max_col-min_col+1)*(max_row-min_row+1) > 50000:
+        raise HTTPException(status_code=422, detail="Source range must be bounded and contain at most 50,000 cells")
+    from openpyxl.utils.cell import column_index_from_string
+    match_col = column_index_from_string(request.match_column.upper())
+    if match_col < min_col or match_col > max_col:
+        raise HTTPException(status_code=422, detail="Match column must be inside the source range")
+    dest_match = re.fullmatch(r"([A-Za-z]{1,3})([1-9][0-9]*)", request.destination_cell)
+    dest_col = column_index_from_string(dest_match.group(1).upper()); dest_row = int(dest_match.group(2))
+    def key(value):
+        if value is None: return ""
+        if isinstance(value, bool): return str(value).casefold()
+        if isinstance(value, (int, float)) and float(value).is_integer(): return str(int(value))
+        return str(value).strip().casefold()
+    lookup = {key(value) for value in request.lookup_ids if key(value)}
+    if not lookup: raise HTTPException(status_code=422, detail="Enter at least one non-empty lookup ID")
+    matched=[]
+    for r in range(min_row, max_row+1):
+        if key(source.cell(r, match_col).value) in lookup:
+            matched.append([source.cell(r,c).value for c in range(min_col,max_col+1)])
+    if dest_row + len(matched)-1 > 1048576 or dest_col + (max_col-min_col) > 16384:
+        raise HTTPException(status_code=422, detail="Destination range exceeds worksheet limits")
+    _record_history(book_id)
+    if destination is None:
+        destination = wb.create_sheet(request.destination_sheet.strip())
+    for ri, values in enumerate(matched):
+        for ci, value in enumerate(values):
+            destination.cell(dest_row+ri,dest_col+ci).value=value
+    _persist_workbook(book_id)
+    return {"source_sheet":source.title,"source_range":request.source_range,"match_column":request.match_column.upper(),
+            "lookup_ids":list(request.lookup_ids),"destination_sheet":destination.title,"destination_cell":request.destination_cell,
+            "matched_rows":len(matched),"written_cells":len(matched)*(max_col-min_col+1),"rows":matched,"autosaved":True}
 
 
 @app.post("/workbooks/{book_id}/rows")
@@ -617,6 +675,32 @@ def calculate_workbook(book_id: str):
                     results.append(item)
                     if result.get("formula_error"):
                         errors.append(item)
+                    # FILTER returns a 2-D array. Materialize it into adjacent cells
+                    # so the web/native grid can display the dynamic-array spill.
+                    array_value = result.get("calculated_value")
+                    if (isinstance(array_value, list) and array_value and
+                            isinstance(cell.value, str) and cell.value.lstrip().upper().startswith("=FILTER(")):
+                        from openpyxl.utils.cell import coordinate_to_tuple
+                        from openpyxl.utils import get_column_letter
+                        anchor_row, anchor_col = coordinate_to_tuple(cell.coordinate)
+                        matrix = array_value if isinstance(array_value[0], list) else [[v] for v in array_value]
+                        spill_cells = []
+                        blocked = None
+                        for ri, row_values in enumerate(matrix):
+                            for ci, spill_value in enumerate(row_values):
+                                if ri == 0 and ci == 0: continue
+                                target = ws.cell(anchor_row + ri, anchor_col + ci)
+                                if target.value not in (None, ""):
+                                    blocked = target.coordinate
+                                    break
+                                spill_cells.append((target, spill_value))
+                            if blocked: break
+                        if blocked:
+                            item["formula_error"] = "#SPILL!"
+                            errors.append({"sheet": ws.title, "cell": blocked, "formula_error": "#SPILL!", "formula": cell.value})
+                        else:
+                            for target, spill_value in spill_cells:
+                                target.value = spill_value
     # Tell desktop Excel to recalculate formulas it understands when the file opens.
     try:
         wb.calculation.calcMode = "auto"

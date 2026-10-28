@@ -366,3 +366,55 @@ def test_formula_engine_regression_whole_column_vlookup_and_countif_criteria():
     assert calculate_cell(wb, ws.title, 'D3')['calculated_value'] == 1
     assert calculate_cell(wb, ws.title, 'D4')['calculated_value'] == 55.0
     assert calculate_cell(wb, ws.title, 'D5')['calculated_value'] == 18
+
+
+def test_retrieve_data_copies_all_matching_rows_to_destination_sheet():
+    book_id = client.post('/workbooks', json={}).json()['workbook_id']
+    client.post(f'/workbooks/{book_id}/sheets', json={'name': 'Sheet2'})
+    client.patch(f'/workbooks/{book_id}/cells', json={'sheet': 'Sheet1', 'cells': [
+        {'cell': 'A1', 'value': 'ID'}, {'cell': 'B1', 'value': 'Name'}, {'cell': 'C1', 'value': 'Dept'}, {'cell': 'D1', 'value': 'Pay'},
+        {'cell': 'A2', 'value': 101}, {'cell': 'B2', 'value': 'Ali'}, {'cell': 'C2', 'value': 'HR'}, {'cell': 'D2', 'value': 3000},
+        {'cell': 'A3', 'value': 102}, {'cell': 'B3', 'value': 'Ahmed'}, {'cell': 'C3', 'value': 'IT'}, {'cell': 'D3', 'value': 4500},
+        {'cell': 'A4', 'value': 105}, {'cell': 'B4', 'value': 'Sara'}, {'cell': 'C4', 'value': 'Finance'}, {'cell': 'D4', 'value': 4000},
+        {'cell': 'A5', 'value': 102}, {'cell': 'B5', 'value': 'Ahmed-2'}, {'cell': 'C5', 'value': 'IT'}, {'cell': 'D5', 'value': 4600},
+    ]})
+    response = client.post(f'/workbooks/{book_id}/retrieve-data', json={
+        'source_sheet':'Sheet1','source_range':'A1:D1000','match_column':'A',
+        'lookup_ids':['102','105','108'],'destination_sheet':'Sheet2','destination_cell':'A1'})
+    assert response.status_code == 200, response.text
+    assert response.json()['matched_rows'] == 3
+    rows = client.get(f'/workbooks/{book_id}/range', params={'sheet':'Sheet2','range':'A1:D3'}).json()['rows']
+    assert rows[0][0]['value'] == 102 and rows[0][1]['value'] == 'Ahmed'
+    assert rows[1][1]['value'] == 'Sara'
+    assert rows[2][1]['value'] == 'Ahmed-2'
+
+
+def test_retrieve_data_rejects_match_column_outside_source_range():
+    book_id = client.post('/workbooks', json={}).json()['workbook_id']
+    client.post(f'/workbooks/{book_id}/sheets', json={'name':'Sheet2'})
+    response = client.post(f'/workbooks/{book_id}/retrieve-data', json={
+        'source_sheet':'Sheet1','source_range':'A1:D10','match_column':'E',
+        'lookup_ids':[102],'destination_sheet':'Sheet2','destination_cell':'A1'})
+    assert response.status_code == 422
+
+
+def test_filter_formula_returns_matching_rows_and_calculate_spills_results():
+    book_id = client.post('/workbooks', json={}).json()['workbook_id']
+    client.post(f'/workbooks/{book_id}/sheets', json={'name':'Sheet2'})
+    client.patch(f'/workbooks/{book_id}/cells', json={'sheet':'Sheet1','cells':[
+        {'cell':'A1','value':'ID'},{'cell':'B1','value':'Name'},
+        {'cell':'A2','value':101},{'cell':'B2','value':'Ali'},
+        {'cell':'A3','value':102},{'cell':'B3','value':'Ahmed'},
+        {'cell':'A4','value':105},{'cell':'B4','value':'Sara'},
+    ]})
+    client.patch(f'/workbooks/{book_id}/cells', json={'sheet':'Sheet2','cells':[
+        {'cell':'A1','value':102},{'cell':'A2','value':105},
+        {'cell':'C1','value':"=FILTER(Sheet1!A2:B4,ISNUMBER(MATCH(Sheet1!A2:A4,Sheet2!A1:A2,0)))"},
+    ]})
+    calc = client.post(f'/workbooks/{book_id}/calculate')
+    assert calc.status_code == 200, calc.text
+    rows = client.get(f'/workbooks/{book_id}/range',params={'sheet':'Sheet2','range':'C1:D2'}).json()['rows']
+    assert rows[0][0]['calculated_value'] == [[102, 'Ahmed'], [105, 'Sara']]
+    assert rows[0][1]['value'] == 'Ahmed'
+    assert rows[1][0]['value'] == 105
+    assert rows[1][1]['value'] == 'Sara'

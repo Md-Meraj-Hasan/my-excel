@@ -211,6 +211,37 @@ class Evaluator:
                 if len(sum_vals) != len(vals): raise FormulaError('#VALUE!')
                 matched = [i for i, v in enumerate(vals) if self.matches(v, criteria)]
                 return len(matched) if fn == 'COUNTIF' else sum(self._number(sum_vals[i]) for i in matched)
+            if fn == 'FILTER':
+                if len(args) not in (2, 3): raise FormulaError('#VALUE!')
+                array_expr = self.normalize_range(args[0])
+                parts = _range_parts(array_expr)
+                if not parts: raise FormulaError('#VALUE!')
+                target_sheet, c1, r1, c2, r2 = parts
+                target_sheet = target_sheet or self.sheet_name
+                left, right = _col_num(c1), _col_num(c2)
+                # Support the common Excel pattern FILTER(array,ISNUMBER(MATCH(id_range,ids,0)),[if_empty]).
+                include = args[1].strip()
+                mm = re.fullmatch(r'ISNUMBER\s*\(\s*MATCH\s*\((.*)\)\s*\)', include, re.I | re.S)
+                if mm:
+                    ma = _split_args(mm.group(1))
+                    if len(ma) not in (2, 3): raise FormulaError('#VALUE!')
+                    ids = self.range(ma[0]); lookup_ids = self.range(ma[1]) if _is_range(ma[1]) else [self.arg(ma[1])]
+                    matched_keys = {str(v).strip().casefold() for v in lookup_ids if v is not None and str(v).strip()}
+                    keep = [v is not None and str(v).strip().casefold() in matched_keys for v in ids]
+                else:
+                    include_values = self.range(include) if _is_range(include) else self.arg(include)
+                    if isinstance(include_values, list): keep = [bool(v) for v in include_values]
+                    else: raise FormulaError('#VALUE!')
+                height = r2-r1+1
+                if len(keep) != height: raise FormulaError('#VALUE!')
+                result=[]
+                for offset, flag in enumerate(keep):
+                    if flag:
+                        result.append([self.cell(f'{__import__("openpyxl").utils.get_column_letter(col)}{r1+offset}', target_sheet) for col in range(left,right+1)])
+                if not result:
+                    if len(args) == 3: return self.arg(args[2])
+                    raise FormulaError('#CALC!')
+                return result
             if fn in ('VLOOKUP', 'XLOOKUP'):
                 if fn == 'VLOOKUP':
                     if len(args) not in (3, 4): raise FormulaError('#VALUE!')
