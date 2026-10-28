@@ -31,14 +31,14 @@ jobs:
         with:
           packages: 'platform-tools'
 
-      # 4. Setup Python for FastAPI backend tests
-      - name: Setup Python for FastAPI backend tests
+      # 4. Setup Python for Flask backend tests
+      - name: Setup Python for Flask backend tests
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 5. Install and test FastAPI backend
-      - name: Install and test FastAPI backend
+      # 5. Install and test Flask backend
+      - name: Install and test Flask backend
         env:
           PYTHONPATH: backend
         run: |
