@@ -152,21 +152,41 @@ class MainActivity : Activity() {
 
         // Keep the column letters and worksheet row 1 outside the vertical scroller.
         // Their horizontal scroll positions are synchronized with the scrolling body.
-        columnHeader = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        // Column letters and frozen row 1 must touch edge-to-edge: no margins,
+        // padding, or spacer views between the two header strips.
+        columnHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, 0)
+            clipToPadding = false
+        }
         headerHorizontal = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             isFillViewport = false
-            addView(columnHeader)
+            setPadding(0, 0, 0, 0)
+            clipToPadding = false
+            clipChildren = false
+            addView(columnHeader, HorizontalScrollView.LayoutParams(-2, dp(24)))
         }
-        root.addView(headerHorizontal, LinearLayout.LayoutParams(-1, dp(30)))
+        root.addView(headerHorizontal, LinearLayout.LayoutParams(-1, dp(24)).apply {
+            setMargins(0, 0, 0, 0)
+        })
 
-        frozenFirstRow = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        frozenFirstRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, 0)
+            clipToPadding = false
+        }
         frozenRowHorizontal = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             isFillViewport = false
-            addView(frozenFirstRow)
+            setPadding(0, 0, 0, 0)
+            clipToPadding = false
+            clipChildren = false
+            addView(frozenFirstRow, HorizontalScrollView.LayoutParams(-2, dp(24)))
         }
-        root.addView(frozenRowHorizontal, LinearLayout.LayoutParams(-1, dp(30)))
+        root.addView(frozenRowHorizontal, LinearLayout.LayoutParams(-1, dp(24)).apply {
+            setMargins(0, 0, 0, 0)
+        })
 
         bodyHorizontal = HorizontalScrollView(this).apply { isFillViewport=false; isHorizontalScrollBarEnabled=false }
         grid=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
@@ -202,6 +222,7 @@ class MainActivity : Activity() {
             "Home" -> listOf(
                 "Undo" to { undo() }, "Redo" to { redo() },
                 "Cell formatting…" to { formattingMenu() },
+                "Paste range from clipboard" to { pasteRangeFromClipboard() },
                 "Find / Replace…" to { findReplaceMenu() }
             )
             "Insert" -> listOf(
@@ -229,6 +250,7 @@ class MainActivity : Activity() {
         val compactLabels = mapOf(
             "New workbook" to "＋ New", "Open workbook…" to "Open", "Save" to "Save", "Save As…" to "Save As",
             "Export CSV…" to "CSV", "Undo" to "↶ Undo", "Redo" to "↷ Redo", "Cell formatting…" to "Format",
+            "Paste range from clipboard" to "Paste Range",
             "Find / Replace…" to "Find", "Add row" to "＋ Row", "Add worksheet" to "＋ Sheet", "Table tools…" to "Table",
             "Format cells…" to "Cells", "Range formatting…" to "Range", "Selected row: Single / Double line…" to "↵ Wrap",
             "Table styles…" to "Styles", "Sort column…" to "Sort", "Filter column…" to "Filter", "Formula help" to "ƒx Help",
@@ -251,6 +273,51 @@ class MainActivity : Activity() {
                 marginEnd = dp(3)
             })
         }
+    }
+
+    /** Paste tab/newline separated clipboard text into a rectangular range starting at the selected cell. */
+    private fun pasteRangeFromClipboard() {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        val clip = clipboard.primaryClip
+        if (clip == null || clip.itemCount == 0) {
+            status.text = "Clipboard is empty. Copy a table first, then tap Paste Range."
+            return
+        }
+        val text = clip.getItemAt(0).coerceToText(this)?.toString().orEmpty()
+        if (text.isBlank()) {
+            status.text = "Clipboard has no text to paste"
+            return
+        }
+        val normalized = text.replace("\r\n", "\n").replace('\r', '\n').trimEnd('\n')
+        val rows = normalized.split('\n').map { it.split('\t') }
+        val start = Regex("^([A-Z]+)([1-9][0-9]*)$").matchEntire(selected)
+        if (start == null) { status.text = "Select a starting cell first"; return }
+        val startCol = columnIndex(start.groupValues[1])
+        val startRow = start.groupValues[2].toIntOrNull() ?: 1
+        val maxCols = rows.maxOfOrNull { it.size } ?: 0
+        if (maxCols == 0 || rows.isEmpty()) { status.text = "No table data found"; return }
+        if (startCol + maxCols > colLimit) {
+            AlertDialog.Builder(this).setMessage("Pasted data exceeds the ${colLimit}-column grid. Select an earlier starting column.")
+                .setPositiveButton("OK", null).show()
+            return
+        }
+        if (startRow + rows.size - 1 > 10000) {
+            status.text = "Pasted data exceeds the 10,000-row safety limit"; return
+        }
+        undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
+        redoHistory.getOrPut(sheetName) { mutableListOf() }.clear()
+        rows.forEachIndexed { ri, row ->
+            row.forEachIndexed { ci, value ->
+                val address = "${colName(startCol + ci)}${startRow + ri}"
+                if (value.isEmpty()) data.remove(address) else data[address] = value
+            }
+        }
+        rowCount = max(rowCount, startRow + rows.size - 1)
+        render()
+        selected = "${colName(startCol)}$startRow"
+        cellName.text = selected
+        formula.setText(data[selected].orEmpty())
+        status.text = "Pasted ${rows.size} rows × $maxCols columns into $sheetName!$selected"
     }
 
     private fun selectedRowTextModeMenu() {
