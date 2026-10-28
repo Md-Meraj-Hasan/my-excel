@@ -1,7 +1,5 @@
 package com.meraj.niceexcel
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.temporal.ChronoUnit
+
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
@@ -15,6 +13,9 @@ import android.view.Gravity
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import android.widget.FrameLayout
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlin.math.max
 
@@ -1497,7 +1498,7 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
                 else -> { if(a.size!=1) error("Date function requires 1 argument"); val date=LocalDate.of(1899,12,30).plusDays(eval(a[0]).toLong()); when(name) { "YEAR" -> date.year.toDouble(); "MONTH" -> date.monthValue.toDouble(); else -> date.dayOfMonth.toDouble() } }
             }
         }
-        val fn=Regex("(?i)^(SUM|AVERAGE|MIN|MAX|MEDIAN|COUNT|COUNTA|COUNTIF|COUNTIFS|SUMIF|SUMIFS|AVERAGEIF|AVERAGEIFS|MINIFS|MAXIFS|PRODUCT|ABS|SQRT|INT|ROUND|ROUNDUP|ROUNDDOWN|CEILING|FLOOR|MOD|POWER|COUNTBLANK|SUBTOTAL)\\((.*)\\)$").matchEntire(s)
+        val fn=Regex("(?i)^(AVERAGEIFS|COUNTIFS|SUMIFS|MINIFS|MAXIFS|AVERAGEIF|COUNTIF|SUMIF|SUM|AVERAGE|MIN|MAX|MEDIAN|COUNT|COUNTA|PRODUCT|ABS|SQRT|INT|ROUNDUP|ROUNDDOWN|ROUND|CEILING|FLOOR|MOD|POWER|COUNTBLANK|SUBTOTAL)\\((.*)\\)$").matchEntire(s)
         if(fn!=null) {
             val name=fn.groupValues[1].uppercase(Locale.US)
             val args=splitArgs(fn.groupValues[2])
@@ -1612,10 +1613,16 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
         val c=criterion.trim().trim('"')
         val m=Regex("^(>=|<=|<>|>|<|=)(.*)$").matchEntire(c)
         if(m!=null) {
-            val a=value.toDoubleOrNull()?:0.0; val b=m.groupValues[2].toDoubleOrNull()?:0.0
-            return when(m.groupValues[1]) { ">"->a>b; "<"->a<b; ">="->a>=b; "<="->a<=b; "<>"->a!=b; else->a==b }
+            val rhs=m.groupValues[2].trim()
+            val left=value.toDoubleOrNull()
+            val right=rhs.toDoubleOrNull()
+            if(left!=null && right!=null) {
+                return when(m.groupValues[1]) { ">"->left>right; "<"->left<right; ">="->left>=right; "<="->left<=right; "<>"->left!=right; else->left==right }
+            }
+            return when(m.groupValues[1]) { "=" -> value.equals(rhs,true); "<>" -> !value.equals(rhs,true); else -> false }
         }
-        return value.equals(c,true) || value.toDoubleOrNull()==c.toDoubleOrNull()
+        val leftNumber=value.toDoubleOrNull(); val rightNumber=c.toDoubleOrNull()
+        return value.equals(c,true) || (leftNumber!=null && rightNumber!=null && leftNumber==rightNumber)
     }
     private fun Boolean.asNum()=if(this) 1.0 else 0.0
 }
