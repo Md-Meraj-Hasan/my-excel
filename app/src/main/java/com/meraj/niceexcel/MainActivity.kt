@@ -27,10 +27,15 @@ class MainActivity : Activity() {
     private var selected = "A1"
     private var activeTopSection = "Home"
     private var ribbonToolsVisible = false
-    private var undoState: Pair<String,String?>? = null
-    private var redoState: Pair<String,String?>? = null
+    private val undoHistory = mutableMapOf<String, MutableList<Map<String, String>>>()
+    private val redoHistory = mutableMapOf<String, MutableList<Map<String, String>>>()
     private lateinit var grid: LinearLayout
     private lateinit var verticalScroll: ScrollView
+    private lateinit var headerHorizontal: HorizontalScrollView
+    private lateinit var frozenRowHorizontal: HorizontalScrollView
+    private lateinit var bodyHorizontal: HorizontalScrollView
+    private lateinit var columnHeader: LinearLayout
+    private lateinit var frozenFirstRow: LinearLayout
     private lateinit var cellName: TextView
     private lateinit var formula: EditText
     private lateinit var status: TextView
@@ -141,14 +146,41 @@ class MainActivity : Activity() {
         formulaBar.addView(cellName)
         formula=EditText(this).apply { setSingleLine(true); textSize=14f; hint="Enter value or formula"; inputType=InputType.TYPE_CLASS_TEXT; setPadding(dp(8),dp(3),dp(8),dp(3)); setBackgroundColor(Color.WHITE); setText(data[selected].orEmpty()); setOnEditorActionListener { _,_,_ -> applyFormula(); true } }
         formulaBar.addView(formula,LinearLayout.LayoutParams(0,-2,1f))
+        formulaBar.addView(TextView(this).apply { text="ƒx ▾"; textSize=12f; setTextColor(Color.rgb(17,94,57)); setPadding(dp(7),dp(10),dp(7),dp(10)); setOnClickListener { formulaPickerMenu() } })
         formulaBar.addView(TextView(this).apply { text="✓"; textSize=23f; setTextColor(Color.rgb(17,125,72)); setPadding(dp(10),dp(4),dp(10),dp(4)); setOnClickListener { applyFormula() } })
         root.addView(formulaBar)
 
-        val horizontal=HorizontalScrollView(this).apply { isFillViewport=false }
+        // Keep the column letters and worksheet row 1 outside the vertical scroller.
+        // Their horizontal scroll positions are synchronized with the scrolling body.
+        columnHeader = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        headerHorizontal = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = false
+            addView(columnHeader)
+        }
+        root.addView(headerHorizontal, LinearLayout.LayoutParams(-1, dp(30)))
+
+        frozenFirstRow = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        frozenRowHorizontal = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = false
+            addView(frozenFirstRow)
+        }
+        root.addView(frozenRowHorizontal, LinearLayout.LayoutParams(-1, dp(30)))
+
+        bodyHorizontal = HorizontalScrollView(this).apply { isFillViewport=false; isHorizontalScrollBarEnabled=false }
         grid=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
-        horizontal.addView(grid)
-        verticalScroll=ScrollView(this).apply { isFillViewport=true; addView(horizontal) }
+        bodyHorizontal.addView(grid)
+        verticalScroll=ScrollView(this).apply { isFillViewport=true; isVerticalScrollBarEnabled=true; addView(bodyHorizontal) }
         root.addView(verticalScroll,LinearLayout.LayoutParams(-1,0,1f))
+        val syncScroll = { source: HorizontalScrollView, targets: List<HorizontalScrollView> ->
+            source.setOnScrollChangeListener { _, scrollX, _, _, _ ->
+                targets.forEach { target -> if (target.scrollX != scrollX) target.scrollTo(scrollX, 0) }
+            }
+        }
+        syncScroll(headerHorizontal, listOf(frozenRowHorizontal, bodyHorizontal))
+        syncScroll(frozenRowHorizontal, listOf(headerHorizontal, bodyHorizontal))
+        syncScroll(bodyHorizontal, listOf(headerHorizontal, frozenRowHorizontal))
 
         sheetTabs=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(4),dp(5),dp(4),dp(5)); setBackgroundColor(Color.rgb(231,237,233)) }
         root.addView(sheetTabs)
@@ -268,7 +300,9 @@ class MainActivity : Activity() {
         selectedCellView = null
         cellViews.clear()
         grid.removeAllViews()
-        val header=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        columnHeader.removeAllViews()
+        frozenFirstRow.removeAllViews()
+        val header=columnHeader
         header.addView(makeCell("",48,true,null))
         // Default width is about three characters. Non-wrapped cell content expands the
         // whole column automatically, one character-space at a time.
@@ -291,8 +325,13 @@ class MainActivity : Activity() {
             headerCell.setOnClickListener { selectColumn(c) }
             header.addView(headerCell)
         }
-        grid.addView(header)
-        for(r in 1..rowCount) {
+        frozenRowHorizontal.visibility = android.view.View.VISIBLE
+        if (rowPassesFilter(1)) {
+            frozenFirstRow.addView(createRowView(1, columnWidths))
+        } else {
+            frozenRowHorizontal.visibility = android.view.View.GONE
+        }
+        for(r in 2..rowCount) {
             if (!rowPassesFilter(r)) continue
             grid.addView(createRowView(r, columnWidths))
         }
@@ -608,27 +647,40 @@ class MainActivity : Activity() {
         editor.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) finish(true) }
     }
     private fun putCell(address:String,value:String) {
-        undoState=address to data[address]
-        redoState=null
+        undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
+        redoHistory.getOrPut(sheetName) { mutableListOf() }.clear()
         if (value.isEmpty()) data.remove(address) else data[address]=value
+    }
+
+    private fun formulaPickerMenu() {
+        val formulas = arrayOf("SUM", "AVERAGE", "COUNT", "COUNTA", "MAX", "MIN", "MEDIAN", "PRODUCT", "IF", "IFERROR", "AND", "OR", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "SQRT", "POWER", "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS", "AVERAGEIF", "CONCAT", "CONCATENATE", "LEFT", "RIGHT", "MID", "LEN", "TRIM", "UPPER", "LOWER", "PROPER", "TODAY", "NOW", "DATE", "YEAR", "MONTH", "DAY")
+        AlertDialog.Builder(this).setTitle("Choose formula")
+            .setItems(formulas) { _, which ->
+                formula.setText("=" + formulas[which] + "(")
+                formula.setSelection(formula.text.length)
+                formula.requestFocus()
+                status.text = "Formula inserted: ${formulas[which]}"
+            }.show()
     }
     private fun applyFormula() {
         putCell(selected,formula.text.toString()); render(); status.text="Updated $sheetName!$selected"
         (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(formula.windowToken,0)
     }
     private fun undo() {
-        val u=undoState
-        if(u==null) { status.text="Nothing to undo"; return }
-        redoState=u.first to data[u.first]
-        if(u.second==null) data.remove(u.first) else data[u.first]=u.second!!
-        undoState=null; render(); formula.setText(data[selected].orEmpty()); status.text="Undo complete"
+        val stack = undoHistory.getOrPut(sheetName) { mutableListOf() }
+        if (stack.isEmpty()) { status.text = "Nothing to undo"; return }
+        redoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
+        val previous = stack.removeAt(stack.lastIndex)
+        data.clear(); data.putAll(previous)
+        render(); formula.setText(data[selected].orEmpty()); status.text = "Undo complete"
     }
     private fun redo() {
-        val r=redoState
-        if(r==null) { status.text="Nothing to redo"; return }
-        undoState=r.first to data[r.first]
-        if(r.second==null) data.remove(r.first) else data[r.first]=r.second!!
-        redoState=null; render(); formula.setText(data[selected].orEmpty()); status.text="Redo complete"
+        val stack = redoHistory.getOrPut(sheetName) { mutableListOf() }
+        if (stack.isEmpty()) { status.text = "Nothing to redo"; return }
+        undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
+        val next = stack.removeAt(stack.lastIndex)
+        data.clear(); data.putAll(next)
+        render(); formula.setText(data[selected].orEmpty()); status.text = "Redo complete"
     }
     private fun findReplaceMenu() {
         val panel=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(8),dp(20),0) }
