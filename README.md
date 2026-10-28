@@ -117,3 +117,9 @@ Added an Android instrumentation round-trip test for multiple worksheets, plain 
 ## Gradle Chaquopy plugin fix
 
 The Chaquopy plugin version is declared centrally in the root `build.gradle` as `com.chaquo.python` version `16.1.0` with `apply false`. The app module applies `id 'com.chaquo.python'` without a version. Keep both files in sync when updating the repository.
+
+## Smart Table UI (Phase 3)
+See `PHASE3-SMART-TABLE-UI.md` for the Insert → Smart Table wizard, table styles, visible-grid filter strip, limitations, and verification notes.
+
+### Phase 4 — Smart Table filtering and sorting
+See `PHASE4-SMART-TABLE-FILTER-SORT.md` for multi-column AND filters, Smart Table sorting, row-insertion range updates, and current limitations.

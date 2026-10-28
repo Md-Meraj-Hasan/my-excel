@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import re
 import tempfile
@@ -16,6 +17,9 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+from openpyxl.worksheet.table import Table, TableStyleInfo
+from .reporting_metadata import empty_metadata, validate_metadata
+from .reporting_store import (META_SHEET_NAME as _REPORTING_META_SHEET, get_reporting_metadata as _store_get_reporting_metadata, set_reporting_metadata as _store_set_reporting_metadata, visible_sheetnames as _store_visible_sheetnames, ensure_excel_tables as _ensure_excel_tables)
 from openpyxl.utils import get_column_letter, range_boundaries
 from pydantic import BaseModel, Field
 from .formula_engine import calculate_cell
@@ -32,6 +36,12 @@ _workbooks: dict[str, Workbook] = {}
 _undo_history: dict[str, list[bytes]] = {}
 _redo_history: dict[str, list[bytes]] = {}
 _HISTORY_LIMIT = 20
+_TABLE_STYLE_MAP = {
+    "blue": "TableStyleMedium2", "green": "TableStyleMedium4",
+    "purple": "TableStyleMedium5", "orange": "TableStyleMedium6",
+    "teal": "TableStyleMedium9", "gray": "TableStyleMedium1",
+    "dark": "TableStyleMedium3", "light": "TableStyleLight9",
+}
 _RECOVERY_DIR = Path(os.environ.get("NICEEXCEL_RECOVERY_DIR", str(Path(__file__).resolve().parent.parent / "data" / "recovery")))
 _RECOVERY_DIR.mkdir(parents=True, exist_ok=True)
 _TEMP_DIR = Path(os.environ.get("NICEEXCEL_TEMP_DIR", str(_RECOVERY_DIR.parent / "temp"))).expanduser().resolve()
@@ -49,6 +59,18 @@ def _recovery_path(book_id: str) -> Path:
     except (ValueError, AttributeError) as exc:
         raise HTTPException(status_code=404, detail="Workbook session not found") from exc
     return _RECOVERY_DIR / f"{safe_id}.xlsx"
+
+
+def _visible_sheetnames(wb: Workbook) -> list[str]:
+    return _store_visible_sheetnames(wb)
+
+
+def _get_reporting_metadata(wb: Workbook) -> dict[str, Any]:
+    return _store_get_reporting_metadata(wb)
+
+
+def _set_reporting_metadata(wb: Workbook, document: Any) -> dict[str, Any]:
+    return _store_set_reporting_metadata(wb, document)
 
 
 def _persist_workbook(book_id: str) -> None:
@@ -79,6 +101,7 @@ def _record_history(book_id: str) -> None:
 
 def _restore_snapshot(book_id: str, payload: bytes) -> Workbook:
     wb = load_workbook(io.BytesIO(payload), data_only=False)
+    _ensure_excel_tables(wb)
     _workbooks[book_id] = wb
     _persist_workbook(book_id)
     return wb
@@ -89,7 +112,9 @@ def _load_recovery(book_id: str) -> Workbook | None:
     if not path.exists():
         return None
     try:
-        return load_workbook(path, data_only=False)
+        wb = load_workbook(path, data_only=False)
+        _ensure_excel_tables(wb)
+        return wb
     except Exception:
         return None
 
@@ -176,6 +201,21 @@ class SortRequest(RangeRequest):
     descending: bool = False
 
 
+class ReportingMetadataRequest(BaseModel):
+    metadata: dict[str, Any]
+
+
+class SmartTableRequest(BaseModel):
+    sheet: str = Field(min_length=1, max_length=31)
+    source_range: str = Field(min_length=2, max_length=100)
+    name: str = Field(default="Table", min_length=1, max_length=120)
+    table_id: str | None = Field(default=None, max_length=64)
+    has_header: bool = True
+    style: str = Field(default="blue", pattern=r"^(blue|green|purple|orange|teal|gray|dark|light)$")
+    filter_enabled: bool = True
+    total_row: bool = False
+
+
 def _book(book_id: str) -> Workbook:
     wb = _workbooks.get(book_id)
     if wb is None:
@@ -188,7 +228,7 @@ def _book(book_id: str) -> Workbook:
 
 
 def _sheet(wb: Workbook, name: str):
-    if name not in wb.sheetnames:
+    if name == _REPORTING_META_SHEET or name not in wb.sheetnames:
         raise HTTPException(status_code=404, detail=f"Worksheet not found: {name}")
     return wb[name]
 
@@ -209,9 +249,10 @@ def _safe_value(value: Any) -> Any:
 
 def _new_session(wb: Workbook) -> dict[str, Any]:
     book_id = str(uuid.uuid4())
+    _ensure_excel_tables(wb)
     _workbooks[book_id] = wb
     _persist_workbook(book_id)
-    return {"workbook_id": book_id, "sheets": wb.sheetnames}
+    return {"workbook_id": book_id, "sheets": _visible_sheetnames(wb)}
 
 
 def _cell_json(cell) -> dict[str, Any]:
@@ -294,7 +335,7 @@ def workbook_info(book_id: str):
             {"name": ws.title, "max_row": ws.max_row, "max_column": ws.max_column,
              "freeze_panes": str(ws.freeze_panes) if ws.freeze_panes else None,
              "merged_ranges": [str(r) for r in ws.merged_cells.ranges]}
-            for ws in wb.worksheets
+            for ws in wb.worksheets if ws.title != _REPORTING_META_SHEET
         ],
         "active_sheet": wb.active.title,
         "formula_calculation": "limited_nice_excel_subset_evaluator",
@@ -411,8 +452,48 @@ def insert_row(book_id: str, request: RowInsertRequest):
     ws = _sheet(wb, request.sheet)
     _record_history(book_id)
     ws.insert_rows(request.row, 1)
+    # Keep reporting table ranges aligned with inserted worksheet rows. A row
+    # inserted inside a table, or immediately before its first data row/after
+    # its last row, becomes part of that table. Rows inserted above a table
+    # shift the entire table down without changing its size.
+    metadata = _get_reporting_metadata(wb)
+    changed = False
+    for definition in metadata.get("tables", []):
+        if definition.get("sheet") != request.sheet:
+            continue
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(definition["source_range"])
+        except Exception:
+            continue
+        old_ref = definition["source_range"]
+        if request.row <= min_row:
+            min_row += 1
+            max_row += 1
+        elif min_row <= request.row <= max_row + 1:
+            max_row += 1
+        else:
+            continue
+        definition["source_range"] = f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max_row}"
+        if definition.get("data_range"):
+            try:
+                dmin_col, dmin_row, dmax_col, dmax_row = range_boundaries(definition["data_range"])
+                if request.row <= dmin_row:
+                    dmin_row += 1
+                    dmax_row += 1
+                elif dmin_row <= request.row <= dmax_row + 1:
+                    dmax_row += 1
+                definition["data_range"] = f"{get_column_letter(dmin_col)}{dmin_row}:{get_column_letter(dmax_col)}{dmax_row}"
+            except Exception:
+                pass
+        # Update any in-memory native table object as well as the persisted metadata.
+        excel_name = definition.get("excel_table_name")
+        if excel_name and excel_name in ws.tables:
+            ws.tables[excel_name].ref = definition["source_range"]
+        changed = changed or old_ref != definition["source_range"]
+    if changed:
+        _set_reporting_metadata(wb, metadata)
     _persist_workbook(book_id)
-    return {"inserted_row": request.row, "sheet": request.sheet, "autosaved": True}
+    return {"inserted_row": request.row, "sheet": request.sheet, "tables_updated": changed, "autosaved": True}
 
 
 @app.post("/workbooks/{book_id}/sheets")
@@ -426,7 +507,7 @@ def add_sheet(book_id: str, request: SheetRequest):
     _record_history(book_id)
     ws = wb.create_sheet(name)
     _persist_workbook(book_id)
-    return {"name": ws.title, "sheets": wb.sheetnames, "autosaved": True}
+    return {"name": ws.title, "sheets": _visible_sheetnames(wb), "autosaved": True}
 
 
 @app.patch("/workbooks/{book_id}/sheets")
@@ -441,19 +522,19 @@ def rename_sheet(book_id: str, request: RenameSheetRequest):
     _record_history(book_id)
     wb[request.old_name].title = name
     _persist_workbook(book_id)
-    return {"sheets": wb.sheetnames, "autosaved": True}
+    return {"sheets": _visible_sheetnames(wb), "autosaved": True}
 
 
 @app.delete("/workbooks/{book_id}/sheets/{sheet_name}")
 def delete_sheet(book_id: str, sheet_name: str):
     wb = _book(book_id)
     ws = _sheet(wb, sheet_name)
-    if len(wb.sheetnames) == 1:
+    if len(_visible_sheetnames(wb)) == 1:
         raise HTTPException(status_code=409, detail="A workbook must retain at least one worksheet")
     _record_history(book_id)
     wb.remove(ws)
     _persist_workbook(book_id)
-    return {"sheets": wb.sheetnames, "active_sheet": wb.active.title, "autosaved": True}
+    return {"sheets": _visible_sheetnames(wb), "active_sheet": wb.active.title, "autosaved": True}
 
 
 @app.patch("/workbooks/{book_id}/style")
@@ -552,6 +633,143 @@ def sort_range(book_id: str, request: SortRequest):
     return {"sorted_range": request.cell_range, "rows": len(rows), "autosaved": True}
 
 
+@app.get("/workbooks/{book_id}/reporting/metadata")
+def get_reporting_metadata(book_id: str):
+    wb = _book(book_id)
+    return {"metadata": _get_reporting_metadata(wb)}
+
+
+@app.put("/workbooks/{book_id}/reporting/metadata")
+def put_reporting_metadata(book_id: str, request: ReportingMetadataRequest):
+    wb = _book(book_id)
+    try:
+        normalized = validate_metadata(request.metadata)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _record_history(book_id)
+    _set_reporting_metadata(wb, normalized)
+    _persist_workbook(book_id)
+    return {"metadata": normalized, "autosaved": True}
+
+
+@app.post("/workbooks/{book_id}/tables")
+def create_smart_table(book_id: str, request: SmartTableRequest):
+    """Create a formatted Excel table and persist its editable NiceExcel definition."""
+    wb = _book(book_id)
+    ws = _sheet(wb, request.sheet)
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(request.source_range.replace("$", "").replace(" ", ""))
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Invalid table source range") from exc
+    if not all((min_col, min_row, max_col, max_row)) or max_row < min_row or max_col < min_col:
+        raise HTTPException(status_code=422, detail="Table source must be a rectangular cell range")
+    if (max_row - min_row + 1) * (max_col - min_col + 1) > 100000:
+        raise HTTPException(status_code=413, detail="Smart Table is limited to 100,000 cells per table")
+    data_range = f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max_row}"
+    table_end_row = max_row + 1 if request.total_row else max_row
+    if request.total_row and any(ws.cell(max_row + 1, col).value is not None for col in range(min_col, max_col + 1)):
+        raise HTTPException(status_code=409, detail="Cannot add a totals row because the next row already contains data in the selected columns")
+    source_range = f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{table_end_row}"
+    if request.has_header and max_row == min_row:
+        raise HTTPException(status_code=422, detail="A table with headers needs at least one data row")
+    # Excel table headers must be non-empty and unique. Repair blanks/duplicates deterministically.
+    headers = []
+    if request.has_header:
+        seen = set()
+        for col in range(min_col, max_col + 1):
+            raw = ws.cell(min_row, col).value
+            header = str(raw).strip() if raw is not None else ""
+            if not header:
+                header = f"Column{col - min_col + 1}"
+            base = header
+            suffix = 2
+            while header.casefold() in seen:
+                header = f"{base}_{suffix}"
+                suffix += 1
+            seen.add(header.casefold())
+            headers.append(header)
+    else:
+        headers = [f"Column{i + 1}" for i in range(max_col - min_col + 1)]
+    if not request.has_header:
+        raise HTTPException(status_code=422, detail="Smart Table currently requires a header row so sorting and filters remain reliable. Add column headers first.")
+    meta = _get_reporting_metadata(wb)
+    table_id = request.table_id or f"table_{uuid.uuid4().hex[:12]}"
+    if any(item["id"] == table_id for item in meta["tables"]):
+        raise HTTPException(status_code=409, detail="A Smart Table with this ID already exists")
+    excel_name = "tbl_" + re.sub(r"[^A-Za-z0-9_]", "_", table_id)
+    existing_names = {t.displayName.casefold() for sheet in wb.worksheets for t in getattr(sheet, "tables", {}).values()}
+    if excel_name.casefold() in existing_names:
+        excel_name = f"{excel_name}_{uuid.uuid4().hex[:6]}"
+    _record_history(book_id)
+    try:
+        # Normalize invalid/duplicate headers only after recording the undo snapshot.
+        for col, header in zip(range(min_col, max_col + 1), headers):
+            ws.cell(min_row, col).value = header
+        if request.total_row:
+            ws.cell(table_end_row, min_col).value = "Total"
+            for col in range(min_col + 1, max_col + 1):
+                letter = get_column_letter(col)
+                ws.cell(table_end_row, col).value = f"=SUBTOTAL(109,{letter}{min_row + 1}:{letter}{max_row})"
+        table = Table(displayName=excel_name, ref=source_range)
+        table.tableStyleInfo = TableStyleInfo(name=_TABLE_STYLE_MAP[request.style], showFirstColumn=False,
+                                              showLastColumn=False, showRowStripes=True, showColumnStripes=False)
+        table.totalsRowShown = request.total_row
+        if request.filter_enabled:
+            ws.add_table(table)
+        else:
+            # Keep the structured table definition but disable the worksheet AutoFilter.
+            table.autoFilter = None
+            ws.add_table(table)
+        # Apply native cell styles as well as the Excel table style. This keeps the
+        # design visible in NiceExcel's lightweight Android grid, which does not
+        # render OOXML table-style metadata directly.
+        palette = {
+            "blue": ("1F4E78", "D9EAF7", "F2F7FC"),
+            "green": ("217346", "E2F0D9", "F4F9F0"),
+            "purple": ("7030A0", "E4DFEC", "F6F2FA"),
+            "orange": ("C65911", "FCE4D6", "FFF7F0"),
+            "teal": ("0F6B78", "DDEBF7", "F1F8FA"),
+            "gray": ("595959", "D9E1F2", "F5F6F8"),
+            "dark": ("263746", "D6E0E8", "EEF2F5"),
+            "light": ("4472C4", "EAF2F8", "FFFFFF"),
+        }
+        header_hex, stripe_hex, alternate_hex = palette[request.style]
+        for row in range(min_row, table_end_row + 1):
+            for col in range(min_col, max_col + 1):
+                cell = ws.cell(row, col)
+                if row == min_row:
+                    cell.fill = PatternFill(fill_type="solid", fgColor=header_hex)
+                    cell.font = copy(cell.font)
+                    cell.font = Font(name=cell.font.name, sz=cell.font.sz, b=True, i=cell.font.i,
+                                     color="FFFFFF", underline=cell.font.underline)
+                elif request.total_row and row == table_end_row:
+                    cell.fill = PatternFill(fill_type="solid", fgColor=header_hex)
+                    cell.font = Font(name=cell.font.name, sz=cell.font.sz, b=True, color="FFFFFF")
+                elif (row - min_row) % 2 == 1:
+                    cell.fill = PatternFill(fill_type="solid", fgColor=stripe_hex)
+                else:
+                    cell.fill = PatternFill(fill_type="solid", fgColor=alternate_hex)
+        definition = {
+            "id": table_id, "name": request.name.strip(), "sheet": request.sheet,
+            "source_range": source_range, "data_range": data_range, "has_header": request.has_header,
+            "style": request.style, "filter_enabled": request.filter_enabled,
+            "total_row": request.total_row, "excel_table_name": excel_name,
+        }
+        meta["tables"].append(definition)
+        _set_reporting_metadata(wb, meta)
+        _persist_workbook(book_id)
+    except Exception as exc:
+        # Restore from the last pre-operation snapshot rather than leave a partial table behind.
+        history = _undo_history.get(book_id, [])
+        if history:
+            _restore_snapshot(book_id, history.pop())
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=422, detail=f"Could not create Smart Table: {type(exc).__name__}") from exc
+    return {"table": definition, "autosaved": True,
+            "header_adjustments": [headers[i] for i in range(len(headers))] if request.has_header else []}
+
+
 class ChartRequest(BaseModel):
     sheet: str
     data_range: str = Field(alias="range", min_length=3, max_length=100)
@@ -631,7 +849,7 @@ def list_recovery_workbooks():
     for path in sorted(_RECOVERY_DIR.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)[:100]:
         try:
             wb = load_workbook(path, read_only=True, data_only=False)
-            items.append({"workbook_id": path.stem, "sheets": wb.sheetnames, "modified": path.stat().st_mtime})
+            items.append({"workbook_id": path.stem, "sheets": _visible_sheetnames(wb), "modified": path.stat().st_mtime})
             wb.close()
         except Exception:
             continue
@@ -644,7 +862,7 @@ def restore_recovery_workbook(book_id: str):
     if wb is None:
         raise HTTPException(status_code=404, detail="Recovery workbook not found")
     _workbooks[book_id] = wb
-    return {"workbook_id": book_id, "sheets": wb.sheetnames, "restored": True}
+    return {"workbook_id": book_id, "sheets": _visible_sheetnames(wb), "restored": True}
 
 
 @app.get("/workbooks/{book_id}/dependencies")

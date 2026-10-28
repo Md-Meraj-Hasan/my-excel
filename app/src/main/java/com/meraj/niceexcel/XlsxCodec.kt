@@ -25,7 +25,8 @@ internal data class CellStyle(
 
 internal data class XlsxWorkbook(
     val sheets: LinkedHashMap<String, MutableMap<String, String>>,
-    val styles: LinkedHashMap<String, MutableMap<String, CellStyle>>
+    val styles: LinkedHashMap<String, MutableMap<String, CellStyle>>,
+    val reportingMetadata: String? = null
 )
 
 /** Lightweight OOXML codec. Preserves common cell styles; does not preserve every Excel feature. */
@@ -34,8 +35,17 @@ internal object XlsxCodec {
     private const val MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
     private val builtInFormats = mapOf(0 to "General", 1 to "Number (2 decimals)", 2 to "Number (2 decimals)", 9 to "Percentage", 10 to "Percentage", 14 to "Date (text display)", 22 to "Date (text display)", 164 to "Currency")
 
-    fun write(output: OutputStream, sheets: Map<String, out Map<String, String>>, allStyles: Map<String, out Map<String, CellStyle>>) {
-        val safeSheets = if (sheets.isEmpty()) linkedMapOf("Sheet1" to mutableMapOf()) else LinkedHashMap(sheets)
+    private const val REPORTING_META_SHEET = "_NiceExcelMeta"
+
+    fun write(output: OutputStream, sheets: Map<String, out Map<String, String>>, allStyles: Map<String, out Map<String, CellStyle>>, reportingMetadata: String? = null) {
+        val safeSheets = LinkedHashMap<String, Map<String, String>>()
+        sheets.forEach { (name, cells) -> if (name != REPORTING_META_SHEET) safeSheets[name] = cells }
+        if (safeSheets.isEmpty()) safeSheets["Sheet1"] = emptyMap()
+        if (!reportingMetadata.isNullOrBlank()) {
+            safeSheets[REPORTING_META_SHEET] = linkedMapOf<String, String>().apply {
+                reportingMetadata.chunked(30000).forEachIndexed { index, chunk -> put("A${index + 1}", chunk) }
+            }
+        }
         val styleKeys = linkedMapOf<String, Int>()
         val styleList = mutableListOf<CellStyle>()
         safeSheets.forEach { (name, cells) ->
@@ -48,7 +58,7 @@ internal object XlsxCodec {
         ZipOutputStream(output).use { zip ->
             entry(zip, "[Content_Types].xml", """<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${safeSheets.keys.indices.joinToString("") { "<Override PartName=\"/xl/worksheets/sheet${it+1}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" }}</Types>""")
             entry(zip, "_rels/.rels", """<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>""")
-            entry(zip, "xl/workbook.xml", """<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="$MAIN" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${safeSheets.keys.mapIndexed { i, n -> "<sheet name=\"${esc(n.take(31))}\" sheetId=\"${i+1}\" r:id=\"rId${i+1}\"/>" }.joinToString("")}</sheets><calcPr calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/></workbook>""")
+            entry(zip, "xl/workbook.xml", """<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="$MAIN" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${safeSheets.keys.mapIndexed { i, n -> "<sheet name=\"${esc(n.take(31))}\" sheetId=\"${i+1}\"${if(n == REPORTING_META_SHEET) " state=\"veryHidden\"" else ""} r:id=\"rId${i+1}\"/>" }.joinToString("")}</sheets><calcPr calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/></workbook>""")
             entry(zip, "xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${safeSheets.keys.indices.joinToString("") { "<Relationship Id=\"rId${it+1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet${it+1}.xml\"/>" }}<Relationship Id="rId${safeSheets.size+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>""")
             entry(zip, "xl/styles.xml", makeStylesXml(styleList))
             safeSheets.entries.toList().forEachIndexed { index, sheetEntry ->
@@ -96,6 +106,7 @@ internal object XlsxCodec {
         if (defs.isEmpty()) error("Workbook has no worksheets")
         val sheets = linkedMapOf<String, MutableMap<String, String>>()
         val styles = linkedMapOf<String, MutableMap<String, CellStyle>>()
+        var reportingMetadata: String? = null
         defs.forEachIndexed { i, def ->
             val target = rels[def.second] ?: "worksheets/sheet${i+1}.xml"
             val path = normalizePath(if (target.startsWith("/")) target.removePrefix("/") else "xl/$target")
@@ -103,11 +114,15 @@ internal object XlsxCodec {
             val cells = linkedMapOf<String, String>()
             val cellStyles = linkedMapOf<String, CellStyle>()
             if (bytes != null) parseWorksheet(bytes, shared, styleTable, cells, cellStyles)
+            if (def.first == REPORTING_META_SHEET) {
+                reportingMetadata = cells.entries.filter { it.key.matches(Regex("A[1-9][0-9]*")) }.sortedBy { cellRow(it.key) }.joinToString("") { it.value }
+                return@forEachIndexed
+            }
             var name = def.first.ifBlank { "Sheet${i+1}" }; var suffix = 2
             while (sheets.containsKey(name)) { name = "${def.first} ($suffix)"; suffix++ }
             sheets[name] = cells; styles[name] = cellStyles
         }
-        return XlsxWorkbook(sheets, styles)
+        return XlsxWorkbook(sheets, styles, reportingMetadata)
     }
 
     private fun makeStylesXml(styles: List<CellStyle>): String {

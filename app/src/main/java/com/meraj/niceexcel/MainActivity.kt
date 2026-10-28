@@ -21,6 +21,7 @@ class MainActivity : Activity() {
     private val colLimit = 26
     private val sheets = linkedMapOf<String, MutableMap<String,String>>()
     private val styles = linkedMapOf<String, MutableMap<String, CellStyle>>()
+    private var reportingMetadata: String? = null
     private var filterColumn: String? = null
     private var filterText: String? = null
     private var tableHeaderRow: Int? = null
@@ -222,26 +223,33 @@ class MainActivity : Activity() {
             )
             "Home" -> listOf(
                 "Undo" to { undo() }, "Redo" to { redo() },
-                "Cell formatting…" to { formattingMenu() },
+                "Copy selected cell" to { copySelectedCell() },
                 "Paste range from clipboard" to { pasteRangeFromClipboard() },
+                "Clear selected cell" to { clearSelectedCell() },
+                "Cell formatting…" to { formattingMenu() },
                 "Find / Replace…" to { findReplaceMenu() }
             )
             "Insert" -> listOf(
                 "Add row" to { addOneRow() }, "Add worksheet" to { addSheet() },
-                "Table tools…" to { tableMenu() }
+                "Table tools…" to { tableMenu() }, "Merge / table heading tools…" to { tableMenu() }
             )
             "Format" -> listOf(
                 "Format cells…" to { formattingMenu() },
                 "Range formatting…" to { rangeToolsMenu() },
+                "Font size…" to { chooseFontSize() },
+                "Text alignment…" to { chooseAlignment() },
+                "Number format…" to { chooseNumberFormat() },
                 "Selected row: Single / Double line…" to { selectedRowTextModeMenu() },
                 "Table styles…" to { tableMenu() }
             )
             "Data" -> listOf(
-                "Sort column…" to { sortColumn() },
+                "Sort column A → Z" to { sortColumn() },
                 "Filter column…" to { filterMenu() },
-                "Find / Replace…" to { findReplaceMenu() }
+                "Clear filter" to { filterColumn = null; filterText = null; render(); status.text = "Filter cleared" },
+                "Find / Replace…" to { findReplaceMenu() },
+                "Workbook data range info" to { val used = usedRange(); status.text = "Used range: A1:${colName(used.second)}${used.first}" }
             )
-            "Formula" -> listOf("Formula help" to { formulaHelp() })
+            "Formula" -> listOf("Insert function…" to { formulaPickerMenu() }, "Formula help" to { formulaHelp() }, "Formula examples" to { formulaHelp() })
             else -> listOf(
                 "Web Engine" to { startActivity(Intent(this, FlaskActivity::class.java)) },
                 "Workbook info" to { status.text = "${sheets.size} sheet(s) • $rowCount rows • Offline workbook" }
@@ -250,11 +258,13 @@ class MainActivity : Activity() {
         ribbonTools.removeAllViews()
         val compactLabels = mapOf(
             "New workbook" to "＋ New", "Open workbook…" to "Open", "Save" to "Save", "Save As…" to "Save As",
-            "Export CSV…" to "CSV", "Undo" to "↶ Undo", "Redo" to "↷ Redo", "Cell formatting…" to "Format",
-            "Paste range from clipboard" to "Paste Range",
+            "Export CSV…" to "CSV", "Undo" to "↶ Undo", "Redo" to "↷ Redo", "Copy selected cell" to "Copy",
+            "Clear selected cell" to "Clear", "Cell formatting…" to "Format", "Paste range from clipboard" to "Paste Range",
             "Find / Replace…" to "Find", "Add row" to "＋ Row", "Add worksheet" to "＋ Sheet", "Table tools…" to "Table",
-            "Format cells…" to "Cells", "Range formatting…" to "Range", "Selected row: Single / Double line…" to "↵ Wrap",
-            "Table styles…" to "Styles", "Sort column…" to "Sort", "Filter column…" to "Filter", "Formula help" to "ƒx Help",
+            "Format cells…" to "Cells", "Range formatting…" to "Range", "Font size…" to "Size", "Text alignment…" to "Align",
+            "Number format…" to "Number", "Selected row: Single / Double line…" to "↵ Wrap", "Table styles…" to "Styles",
+            "Sort column A → Z" to "Sort A→Z", "Filter column…" to "Filter", "Clear filter" to "Clear filter", "Find / Replace…" to "Find",
+            "Workbook data range info" to "Range info", "Insert function…" to "ƒx Insert", "Formula help" to "ƒx Help",
             "Web Engine" to "Web Excel", "Workbook info" to "Info"
         )
         items.forEach { item ->
@@ -274,6 +284,23 @@ class MainActivity : Activity() {
                 marginEnd = dp(3)
             })
         }
+    }
+
+    private fun copySelectedCell() {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("$sheetName!$selected", data[selected].orEmpty()))
+        status.text = "Copied $sheetName!$selected"
+    }
+
+    private fun clearSelectedCell() {
+        AlertDialog.Builder(this).setTitle("Clear cell")
+            .setMessage("Clear contents of $sheetName!$selected?")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Clear") { _, _ ->
+                putCell(selected, "")
+                render(); formula.setText("")
+                status.text = "Cleared $sheetName!$selected"
+            }.show()
     }
 
     /** Safely paste tab/newline-separated clipboard text into a rectangular range. */
@@ -1273,7 +1300,7 @@ class MainActivity : Activity() {
                 contentResolver.openOutputStream(intent.data!!)?.use { it.write(pendingCsv.toByteArray(Charsets.UTF_8)) }
                 status.text="CSV saved"
             } else if(requestCode==13) {
-                contentResolver.openOutputStream(intent.data!!)?.use { XlsxCodec.write(it, sheets, styles) }
+                contentResolver.openOutputStream(intent.data!!)?.use { XlsxCodec.write(it, sheets, styles, reportingMetadata) }
                 status.text="Excel workbook (.xlsx) saved"
             } else if(requestCode==12) {
                 val text=contentResolver.openInputStream(intent.data!!)?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -1287,6 +1314,7 @@ class MainActivity : Activity() {
                 val loaded = contentResolver.openInputStream(intent.data!!)?.use { XlsxCodec.read(it) } ?: error("Could not open workbook")
                 sheets.clear(); sheets.putAll(loaded.sheets)
                 styles.clear(); styles.putAll(loaded.styles)
+                reportingMetadata = loaded.reportingMetadata
                 rowCount = max(50, sheets.values.flatMap { it.keys }.mapNotNull { Regex("[A-Z]+([0-9]+)").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 50)
                 loaded.sheets.keys.forEach { styles.getOrPut(it) { mutableMapOf() } }
                 if (sheets.isEmpty()) { sheets["Sheet1"] = mutableMapOf(); styles["Sheet1"] = mutableMapOf() }
