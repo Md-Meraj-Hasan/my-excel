@@ -25,4 +25,25 @@ class PoiFormulaBridgeTest {
         assertNotNull(result)
         assertEquals("Orange", result!!.text)
     }
+
+    @Test fun crossSheetSumUsesWorkbookSheets() {
+        val sheets = linkedMapOf(
+            "Formula Tests" to mapOf("B2" to "=SUM(Sales!F2:F4)"),
+            "Sales" to mapOf("F2" to "100.5", "F3" to "200", "F4" to "50")
+        )
+        val result = PoiFormulaBridge.evaluate(sheets, "Formula Tests", "B2", "SUM(Sales!F2:F4)")
+        assertNotNull(result)
+        assertEquals(350.5, result!!.number!!, 0.00001)
+    }
+
+    @Test fun crossSheetXlookupUsesIndexMatchFallback() {
+        val sheets = linkedMapOf(
+            "Formula Tests" to mapOf("B2" to "=XLOOKUP(\"Nisha\",Lookup!A2:A3,Lookup!B2:B3,\"Not found\")"),
+            "Lookup" to mapOf("A2" to "Ravi", "B2" to "Ravi ID", "A3" to "Nisha", "B3" to "Nisha ID")
+        )
+        val result = PoiFormulaBridge.evaluate(sheets, "Formula Tests", "B2", "XLOOKUP(\"Nisha\",Lookup!A2:A3,Lookup!B2:B3,\"Not found\")")
+        assertNotNull(result)
+        assertEquals("Nisha ID", result!!.text)
+    }
+
 }
