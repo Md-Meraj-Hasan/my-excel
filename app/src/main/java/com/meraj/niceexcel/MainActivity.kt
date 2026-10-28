@@ -218,7 +218,7 @@ class MainActivity : Activity() {
             gravity=Gravity.CENTER_VERTICAL
             setPadding(dp(4),dp(5),dp(4),dp(5))
             setBackgroundColor(Color.rgb(231,237,233))
-            layoutParams = HorizontalScrollView.LayoutParams(-2, -2)
+            layoutParams = FrameLayout.LayoutParams(-2, -2)
         }
         sheetTabsScroll.addView(sheetTabs)
         root.addView(sheetTabsScroll, LinearLayout.LayoutParams(-1, -2))
