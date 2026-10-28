@@ -2003,7 +2003,7 @@ class MainActivity : Activity() {
         val result = try {
             val expression = raw.drop(1)
             // Try the imported Apache POI evaluator first for broad Excel-function coverage.
-            val imported = PoiFormulaBridge.evaluate(data, address, expression)
+            val imported = PoiFormulaBridge.evaluate(sheets, sheetName, address, expression)
             when {
                 imported?.error == null && imported?.text != null -> imported.text
                 imported?.error == null && imported?.number != null -> formatNumber(imported.number, st?.numberFormat ?: "General", imported.number.toString())
