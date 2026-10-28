@@ -49,4 +49,23 @@ class XlsxCodecRoundTripTest {
         assertTrue(header?.border == true)
         assertTrue(result.styles["Sales"]?.get("B2")?.italic == true)
     }
+
+    @Test
+    fun roundTripsMergedRangesForEachSheet() {
+        val sheets = linkedMapOf(
+            "Attendance" to linkedMapOf("A1" to "Electrical", "A2" to "Electrical", "A3" to "Electrical", "B1" to "Meraj") as MutableMap<String, String>,
+            "Sales" to linkedMapOf("A1" to "January", "B1" to "100") as MutableMap<String, String>
+        )
+        val merges = linkedMapOf(
+            "Attendance" to mutableListOf("A1:A3", "B1:C1"),
+            "Sales" to mutableListOf("A1:B1")
+        )
+        val output = ByteArrayOutputStream()
+        XlsxCodec.write(output, sheets, linkedMapOf(), mergedRanges = merges)
+        val result = XlsxCodec.read(ByteArrayInputStream(output.toByteArray()))
+        assertEquals(listOf("A1:A3", "B1:C1"), result.mergedRanges["Attendance"])
+        assertEquals(listOf("A1:B1"), result.mergedRanges["Sales"])
+        assertEquals("Electrical", result.sheets["Attendance"]?.get("A1"))
+    }
+
 }

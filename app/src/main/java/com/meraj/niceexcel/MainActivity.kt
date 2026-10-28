@@ -32,6 +32,8 @@ class MainActivity : Activity() {
     private val colLimit = 26
     private val sheets = linkedMapOf<String, MutableMap<String,String>>()
     private val styles = linkedMapOf<String, MutableMap<String, CellStyle>>()
+    // OOXML merged ranges, keyed by worksheet name (e.g. A1:B3).
+    private val mergedRangesBySheet = linkedMapOf<String, MutableList<String>>()
     private var reportingMetadata: String? = null
     private var filterColumn: String? = null
     private var filterText: String? = null
@@ -233,7 +235,7 @@ class MainActivity : Activity() {
         })
 
         bodyHorizontal = HorizontalScrollView(this).apply { isFillViewport=false; isHorizontalScrollBarEnabled=false }
-        grid=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
+        grid=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         bodyHorizontal.addView(grid)
         verticalScroll=ScrollView(this).apply { isFillViewport=true; isVerticalScrollBarEnabled=true; addView(bodyHorizontal) }
         root.addView(verticalScroll,LinearLayout.LayoutParams(-1,0,1f))
@@ -290,8 +292,10 @@ class MainActivity : Activity() {
                 "Add 10 rows at bottom" to { addRows(10) },
                 "Duplicate selected row to bottom" to { duplicateSelectedRowToBottom() },
                 "Clear selected row…" to { clearSelectedRowConfirm() },
-                "Table tools…" to { tableMenu() },
-                "Merge / table heading tools…" to { tableMenu() }
+                "Merge Top to Bottom" to { mergeCellsDialog(vertical = true) },
+                "Merge Left to Right" to { mergeCellsDialog(vertical = false) },
+                "Unmerge selected range…" to { unmergeCellsDialog() },
+                "Table tools…" to { tableMenu() }
             )
             "Format" -> listOf(
                 "Format cells…" to { formattingMenu() },
@@ -321,6 +325,8 @@ class MainActivity : Activity() {
             "Export CSV…" to "CSV", "Undo" to "↶ Undo", "Redo" to "↷ Redo", "Copy selected cell" to "Copy",
             "Clear selected cell" to "Clear", "Cell formatting…" to "Format", "Paste range from clipboard" to "Paste Range",
             "Find / Replace…" to "Find", "Table tools…" to "Table",
+            "Merge Top to Bottom" to "Merge ↓", "Merge Left to Right" to "Merge →",
+            "Unmerge selected range…" to "Unmerge",
             "Format cells…" to "Cells", "Range formatting…" to "Range", "Font size…" to "Size", "Text alignment…" to "Align",
             "Number format…" to "Number", "Selected row: Single / Double line…" to "↵ Wrap", "Table styles…" to "Styles",
             "Sort column A → Z" to "Sort A→Z", "Filter column…" to "Filter", "Clear filter" to "Clear filter", "Find / Replace…" to "Find",
@@ -629,6 +635,7 @@ class MainActivity : Activity() {
             applyCellBackground(view, address, false)
         }
         selectedCellView = cellViews[selected]
+        applyMergedCellPresentation()
         Log.d("NiceExcelPerf", "refreshVisibleCells sheet=$sheetName cells=${cellViews.size} ms=${SystemClock.elapsedRealtime() - perfStarted}")
     }
 
@@ -781,6 +788,7 @@ class MainActivity : Activity() {
             grid.addView(rowView)
         }
         // Bottom Add Row bar removed: row insertion remains available in the Insert ribbon.
+        applyMergedCellPresentation()
         renderTabs()
         Log.d("NiceExcelPerf", "render sheet=$sheetName mode=rebuild cells=${cellViews.size} ms=${SystemClock.elapsedRealtime() - perfStarted}")
     }
@@ -801,6 +809,8 @@ class MainActivity : Activity() {
             // baseline from its one-line siblings; baseline alignment vertically offsets
             // its background and creates the apparent extra/inset rectangle.
             setBaselineAligned(false)
+            clipChildren = false
+            clipToPadding = false
             gravity = Gravity.TOP
             layoutParams = LinearLayout.LayoutParams(-2, dp(rowHeight))
             minimumHeight = dp(rowHeight)
@@ -1209,6 +1219,7 @@ class MainActivity : Activity() {
         // invalidate formula results cached for every existing sheet.
         sheets[name]=mutableMapOf()
         styles[name]=mutableMapOf()
+        mergedRangesBySheet.remove(name)
         wrappedRowsBySheet[name]=mutableSetOf()
         columnWidthsBySheet[name] = List(colLimit) { c -> max(28, minOf(360, (colName(c).length * 7 + 18))) }
         sheetName=name; selected="A1"
@@ -1248,6 +1259,7 @@ class MainActivity : Activity() {
                 val started = SystemClock.elapsedRealtime()
                 sheets.remove(deleting)
                 styles.remove(deleting)
+                mergedRangesBySheet.remove(deleting)
                 wrappedRowsBySheet.remove(deleting)
                 columnWidthsBySheet.remove(deleting)
                 // Remove only the deleted sheet's cached formula results; keep other sheets warm.
@@ -1274,6 +1286,8 @@ class MainActivity : Activity() {
                     val rebuilt=linkedMapOf<String,MutableMap<String,String>>()
                     sheets.forEach { (k,v) -> rebuilt[if(k==old) name else k]=v }
                     formulaDisplayCache.clear()
+                    val oldMerges = mergedRangesBySheet.remove(old)
+                    if (oldMerges != null) mergedRangesBySheet[name] = oldMerges
                     sheets.clear(); sheets.putAll(rebuilt); if(sheetName==old) sheetName=name; renderTabs()
                 }
             }.setNegativeButton("Cancel",null).show()
@@ -1315,6 +1329,169 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun mergeCellsDialog(vertical: Boolean) {
+        val input = EditText(this).apply {
+            hint = if (vertical) "Example: A1:A3" else "Example: A1:C1"
+            setSingleLine(true)
+            setText(selectedRangeLabel ?: selected)
+            setSelection(text.length)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+        }
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+            addView(TextView(this@MainActivity).apply {
+                text = if (vertical) "Enter one column range. All cells must contain the same non-empty value." else "Enter one row range. All cells must contain the same non-empty value."
+                textSize = 12f
+            })
+            addView(input)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(if (vertical) "Merge Top to Bottom" else "Merge Left to Right")
+            .setView(wrap)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Merge") { _, _ ->
+                val range = input.text.toString().trim().uppercase(Locale.ROOT).replace("$", "")
+                val cells = parseCellRange(range)
+                val parts = range.split(":")
+                val endpoints = if (parts.size == 2) parts else listOf(range, range)
+                val m1 = Regex("^([A-Z]+)([0-9]+)$").matchEntire(endpoints[0])
+                val m2 = Regex("^([A-Z]+)([0-9]+)$").matchEntire(endpoints[1])
+                if (cells.size < 2 || m1 == null || m2 == null) {
+                    Toast.makeText(this, "Enter a valid range such as A1:A3 or A1:C1", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val c1 = columnIndex(m1.groupValues[1]); val c2 = columnIndex(m2.groupValues[1])
+                val r1 = m1.groupValues[2].toIntOrNull() ?: 0; val r2 = m2.groupValues[2].toIntOrNull() ?: 0
+                val shapeOkay = if (vertical) c1 == c2 && r1 < r2 else r1 == r2 && c1 < c2
+                if (!shapeOkay) {
+                    Toast.makeText(this, if (vertical) "Use a vertical range like A1:A3" else "Use a horizontal range like A1:C1", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val rawValues = cells.map { data[it].orEmpty() }
+                if (rawValues.first().isBlank() || rawValues.any { it != rawValues.first() }) {
+                    Toast.makeText(this, "Merge cancelled: every adjacent cell must have the same non-empty value", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val targetRange = "${endpoints[0]}:${endpoints[1]}"
+                val existing = mergedRangesBySheet.getOrPut(sheetName) { mutableListOf() }
+                val overlaps = existing.any { old ->
+                    val oldCells = parseCellRange(old)
+                    oldCells.any { it in cells }
+                }
+                if (overlaps) {
+                    Toast.makeText(this, "Range overlaps an existing merge. Unmerge it first.", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                existing.add(targetRange)
+                // Identical duplicate values are redundant in a merged Excel range. Keep the
+                // top-left value and clear the subordinate cells as Excel expects.
+                cells.drop(1).forEach { address -> data.remove(address); sheetStyles.remove(address) }
+                selected = endpoints[0]
+                selectedRangeLabel = targetRange
+                selectedRangeCells = cells
+                cellName.text = selected
+                formula.setText(data[selected].orEmpty())
+                render()
+                status.text = "Merged $targetRange"
+            }.show()
+    }
+
+    private fun unmergeCellsDialog() {
+        val input = EditText(this).apply {
+            hint = "Example: A1:A3"
+            setSingleLine(true)
+            setText(selectedRangeLabel ?: selected)
+            setSelection(text.length)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+        }
+        AlertDialog.Builder(this).setTitle("Unmerge range")
+            .setMessage("Enter the exact merged range to unmerge.")
+            .setView(input)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Unmerge") { _, _ ->
+                val range = input.text.toString().trim().uppercase(Locale.ROOT).replace("$", "")
+                val removed = mergedRangesBySheet[sheetName]?.remove(range) == true
+                if (removed) {
+                    selectedRangeCells = emptyList(); selectedRangeLabel = null
+                    render(); status.text = "Unmerged $range"
+                } else {
+                    Toast.makeText(this, "Exact merged range not found", Toast.LENGTH_LONG).show()
+                }
+            }.show()
+    }
+
+    private fun applyMergedCellPresentation() {
+        if (cellViews.isEmpty()) return
+
+        // IMPORTANT: never change a cell's measured width/height to represent a merge.
+        // Each cell is a child of a fixed row LinearLayout; changing its layoutParams
+        // pushes neighboring cells or clips a tall cell inside its row. Instead, keep
+        // the grid geometry unchanged and visually stretch the anchor over the hidden
+        // cells. Parent rows/grid already allow children to draw outside their bounds.
+        cellViews.forEach { (address, view) ->
+            view.visibility = android.view.View.VISIBLE
+            view.scaleX = 1f
+            view.scaleY = 1f
+            view.pivotX = 0f
+            view.pivotY = 0f
+            view.translationX = 0f
+            view.translationY = 0f
+            view.translationZ = 0f
+            val row = Regex("^[A-Z]+([0-9]+)$").matchEntire(address)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+            view.layoutParams = (view.layoutParams ?: LinearLayout.LayoutParams(dp(39), dp(24))).apply {
+                width = dp(lastColumnWidths.getOrElse(columnIndex(address.takeWhile { it.isLetter() }) ) { 39 })
+                height = dp(if (row in wrappedRows) 52 else 24)
+            }
+        }
+
+        // Reset row elevations before applying the active sheet's merge overlays.
+        for (i in 0 until grid.childCount) {
+            (grid.getChildAt(i) as? LinearLayout)?.translationZ = 0f
+        }
+
+        mergedRangesBySheet[sheetName].orEmpty().forEach { range ->
+            val parts = range.split(":")
+            if (parts.size != 2) return@forEach
+            val start = Regex("^([A-Z]+)([0-9]+)$").matchEntire(parts[0]) ?: return@forEach
+            val end = Regex("^([A-Z]+)([0-9]+)$").matchEntire(parts[1]) ?: return@forEach
+            val c1 = columnIndex(start.groupValues[1]); val c2 = columnIndex(end.groupValues[1])
+            val r1 = start.groupValues[2].toIntOrNull() ?: return@forEach
+            val r2 = end.groupValues[2].toIntOrNull() ?: return@forEach
+            if (c1 !in 0 until colLimit || c2 !in 0 until colLimit || r1 !in 1..rowCount || r2 !in 1..rowCount || c1 > c2 || r1 > r2) return@forEach
+            val horizontal = r1 == r2 && c2 > c1
+            val vertical = c1 == c2 && r2 > r1
+            if (!horizontal && !vertical) return@forEach
+            val anchor = cellViews[parts[0]] ?: return@forEach
+            val baseWidth = dp(lastColumnWidths.getOrElse(c1) { 39 }).coerceAtLeast(1)
+            val baseHeight = dp(if (r1 in wrappedRows) 52 else 24).coerceAtLeast(1)
+            val mergedWidth = if (horizontal) (c1..c2).sumOf { dp(lastColumnWidths.getOrElse(it) { 39 }) } else baseWidth
+            val mergedHeight = if (vertical) (r1..r2).sumOf { dp(if (it in wrappedRows) 52 else 24) } else baseHeight
+
+            // Scaling changes only drawing, not LinearLayout's measurement; therefore
+            // following columns/rows keep their original positions.
+            anchor.pivotX = 0f
+            anchor.pivotY = 0f
+            anchor.scaleX = mergedWidth.toFloat() / baseWidth.toFloat()
+            anchor.scaleY = mergedHeight.toFloat() / baseHeight.toFloat()
+            anchor.translationZ = dp(8).toFloat()
+            anchor.bringToFront()
+
+            if (horizontal) {
+                for (c in c1 + 1..c2) cellViews["${colName(c)}$r1"]?.visibility = android.view.View.INVISIBLE
+            } else {
+                // Elevate the anchor row above following rows so the stretched cell is
+                // drawn over them. Row heights themselves remain unchanged.
+                val rowView = if (r1 == 1) frozenFirstRow else (2 until r1).let { _ ->
+                    (0 until grid.childCount).asSequence().mapNotNull { grid.getChildAt(it) as? LinearLayout }
+                        .firstOrNull { (it.tag as? Int) == r1 }
+                }
+                rowView?.translationZ = dp(8).toFloat()
+                for (r in r1 + 1..r2) cellViews["${colName(c1)}$r"]?.visibility = android.view.View.INVISIBLE
+            }
+        }
     }
 
     private fun parseCellRange(raw: String): List<String> {
@@ -1894,7 +2071,7 @@ class MainActivity : Activity() {
                 contentResolver.openOutputStream(intent.data!!)?.use { it.write(pendingCsv.toByteArray(Charsets.UTF_8)) }
                 status.text="CSV saved"
             } else if(requestCode==13) {
-                contentResolver.openOutputStream(intent.data!!)?.use { XlsxCodec.write(it, sheets, styles, reportingMetadata) }
+                contentResolver.openOutputStream(intent.data!!)?.use { XlsxCodec.write(it, sheets, styles, reportingMetadata, mergedRangesBySheet) }
                 status.text="Excel workbook (.xlsx) saved"
             } else if(requestCode==12) {
                 val text=contentResolver.openInputStream(intent.data!!)?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -1908,6 +2085,8 @@ class MainActivity : Activity() {
                 val loaded = contentResolver.openInputStream(intent.data!!)?.use { XlsxCodec.read(it) } ?: error("Could not open workbook")
                 sheets.clear(); sheets.putAll(loaded.sheets)
                 styles.clear(); styles.putAll(loaded.styles)
+                mergedRangesBySheet.clear()
+                loaded.mergedRanges.forEach { (name, ranges) -> mergedRangesBySheet[name] = ranges.toMutableList() }
                 formulaDisplayCache.clear()
                 reportingMetadata = loaded.reportingMetadata
                 rowCount = max(50, sheets.values.flatMap { it.keys }.mapNotNull { Regex("[A-Z]+([0-9]+)").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 50)

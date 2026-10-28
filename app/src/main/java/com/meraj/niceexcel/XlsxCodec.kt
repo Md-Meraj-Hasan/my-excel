@@ -26,7 +26,8 @@ internal data class CellStyle(
 internal data class XlsxWorkbook(
     val sheets: LinkedHashMap<String, MutableMap<String, String>>,
     val styles: LinkedHashMap<String, MutableMap<String, CellStyle>>,
-    val reportingMetadata: String? = null
+    val reportingMetadata: String? = null,
+    val mergedRanges: LinkedHashMap<String, MutableList<String>> = linkedMapOf()
 )
 
 /** Lightweight OOXML codec. Preserves common cell styles; does not preserve every Excel feature. */
@@ -37,7 +38,7 @@ internal object XlsxCodec {
 
     private const val REPORTING_META_SHEET = "_NiceExcelMeta"
 
-    fun write(output: OutputStream, sheets: Map<String, out Map<String, String>>, allStyles: Map<String, out Map<String, CellStyle>>, reportingMetadata: String? = null) {
+    fun write(output: OutputStream, sheets: Map<String, out Map<String, String>>, allStyles: Map<String, out Map<String, CellStyle>>, reportingMetadata: String? = null, mergedRanges: Map<String, out List<String>> = emptyMap()) {
         val safeSheets = LinkedHashMap<String, Map<String, String>>()
         sheets.forEach { (name, cells) -> if (name != REPORTING_META_SHEET) safeSheets[name] = cells }
         if (safeSheets.isEmpty()) safeSheets["Sheet1"] = emptyMap()
@@ -84,7 +85,14 @@ internal object XlsxCodec {
                         }
                         append("</row>")
                     }
-                    append("</sheetData></worksheet>")
+                    append("</sheetData>")
+                    val ranges = mergedRanges[name].orEmpty().distinct().filter { isValidRange(it) }
+                    if (ranges.isNotEmpty()) {
+                        append("<mergeCells count=\\"${ranges.size}\\">")
+                        ranges.forEach { range -> append("<mergeCell ref=\\"${esc(range.uppercase())}\\"/>") }
+                        append("</mergeCells>")
+                    }
+                    append("</worksheet>")
                 }
                 entry(zip, "xl/worksheets/sheet${index+1}.xml", xml)
             }
@@ -107,13 +115,15 @@ internal object XlsxCodec {
         val sheets = linkedMapOf<String, MutableMap<String, String>>()
         val styles = linkedMapOf<String, MutableMap<String, CellStyle>>()
         var reportingMetadata: String? = null
+        val mergedRanges = linkedMapOf<String, MutableList<String>>()
         defs.forEachIndexed { i, def ->
             val target = rels[def.second] ?: "worksheets/sheet${i+1}.xml"
             val path = normalizePath(if (target.startsWith("/")) target.removePrefix("/") else "xl/$target")
             val bytes = parts[path] ?: parts["xl/worksheets/sheet${i+1}.xml"]
             val cells = linkedMapOf<String, String>()
             val cellStyles = linkedMapOf<String, CellStyle>()
-            if (bytes != null) parseWorksheet(bytes, shared, styleTable, cells, cellStyles)
+            val sheetMerges = mutableListOf<String>()
+            if (bytes != null) parseWorksheet(bytes, shared, styleTable, cells, cellStyles, sheetMerges)
             if (def.first == REPORTING_META_SHEET) {
                 reportingMetadata = cells.entries.filter { it.key.matches(Regex("A[1-9][0-9]*")) }.sortedBy { cellRow(it.key) }.joinToString("") { it.value }
                 return@forEachIndexed
@@ -121,8 +131,17 @@ internal object XlsxCodec {
             var name = def.first.ifBlank { "Sheet${i+1}" }; var suffix = 2
             while (sheets.containsKey(name)) { name = "${def.first} ($suffix)"; suffix++ }
             sheets[name] = cells; styles[name] = cellStyles
+            if (sheetMerges.isNotEmpty()) mergedRanges[name] = sheetMerges
         }
-        return XlsxWorkbook(sheets, styles, reportingMetadata)
+        return XlsxWorkbook(sheets, styles, reportingMetadata, mergedRanges)
+    }
+
+    private fun isValidRange(range: String): Boolean {
+        val parts = range.uppercase().split(":")
+        if (parts.size != 2) return false
+        val cellPattern = Regex("[A-Z]{1,3}[1-9][0-9]*")
+        if (parts.any { !cellPattern.matches(it) }) return false
+        return parts[0] != parts[1]
     }
 
     private fun makeStylesXml(styles: List<CellStyle>): String {
@@ -188,11 +207,12 @@ internal object XlsxCodec {
         }
         return out
     }
-    private fun parseWorksheet(xml:ByteArray, shared:List<String>, styleTable:List<CellStyle>, cells:MutableMap<String,String>, styles:MutableMap<String,CellStyle>) {
+    private fun parseWorksheet(xml:ByteArray, shared:List<String>, styleTable:List<CellStyle>, cells:MutableMap<String,String>, styles:MutableMap<String,CellStyle>, mergedRanges:MutableList<String>) {
         val p=parser(xml); var address=""; var type=""; var formula=""; var value=""; var inline=""; var inInline=false; var styleId=0
         while(p.eventType!=XmlPullParser.END_DOCUMENT) {
             if(p.eventType==XmlPullParser.START_TAG) when(p.name) {
                 "c" -> { address=p.getAttributeValue(null,"r")?:""; type=p.getAttributeValue(null,"t")?:""; styleId=p.getAttributeValue(null,"s")?.toIntOrNull()?:0; formula="";value="";inline="" }
+                "mergeCell" -> p.getAttributeValue(null, "ref")?.uppercase()?.takeIf { isValidRange(it) }?.let { mergedRanges.add(it) }
                 "f" -> formula=readText(p); "v" -> value=readText(p); "is" -> inInline=true; "t" -> if(inInline) inline+=readText(p)
             } else if(p.eventType==XmlPullParser.END_TAG) when(p.name) {
                 "is" -> inInline=false
