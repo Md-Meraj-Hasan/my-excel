@@ -39,3 +39,31 @@ def test_xlookup_reverse_search():
         "A1": "A", "B1": 1, "A2": "A", "B2": 2, "A3": "A", "B3": 3
     })
     assert result["calculated_value"] == 3
+
+
+def test_sumifs_and_countifs():
+    result = run_formula('=SUMIFS(B2:B4,A2:A4,"East")', {"A2":"East","B2":100,"A3":"West","B3":50,"A4":"East","B4":25})
+    assert result["calculated_value"] == 125
+    result = run_formula('=COUNTIFS(A2:A4,"East",B2:B4,">50")', {"A2":"East","B2":100,"A3":"West","B3":50,"A4":"East","B4":25})
+    assert result["calculated_value"] == 1
+
+
+def test_averageif_and_averageifs():
+    result = run_formula('=AVERAGEIF(A2:A4,"East",B2:B4)', {"A2":"East","B2":100,"A3":"West","B3":50,"A4":"East","B4":25})
+    assert result["calculated_value"] == 62.5
+    result = run_formula('=AVERAGEIFS(B2:B4,A2:A4,"East",B2:B4,">50")', {"A2":"East","B2":100,"A3":"West","B3":50,"A4":"East","B4":25})
+    assert result["calculated_value"] == 100
+
+
+def test_median_product_and_ifna():
+    assert run_formula('=MEDIAN(A1:A3)', {"A1":1,"A2":9,"A3":5})["calculated_value"] == 5
+    assert run_formula('=PRODUCT(A1:A3)', {"A1":2,"A2":3,"A3":4})["calculated_value"] == 24
+    assert run_formula('=IFNA(XLOOKUP("z",A1:A2,B1:B2),"missing")', {"A1":"a","B1":1,"A2":"b","B2":2})["calculated_value"] == "missing"
+
+
+def test_date_functions_and_ifna():
+    assert run_formula('=DATE(2024,1,1)', {})['calculated_value'] == 45292
+    assert run_formula('=YEAR(45292)', {})['calculated_value'] == 2024
+    assert run_formula('=MONTH(45292)', {})['calculated_value'] == 1
+    assert run_formula('=DAY(45292)', {})['calculated_value'] == 1
+    assert run_formula('=IFNA(XLOOKUP("z",A1:A2,B1:B2),"missing")', {'A1':'a','B1':1,'A2':'b','B2':2})['calculated_value'] == 'missing'

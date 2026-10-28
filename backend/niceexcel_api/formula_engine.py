@@ -190,7 +190,29 @@ class Evaluator:
         fn, body = m.group(1).upper(), m.group(2)
         args = _split_args(body)
         try:
-            if fn in ('SUM', 'AVERAGE', 'MIN', 'MAX', 'COUNT'):
+            if fn in ('TODAY', 'NOW'):
+                from datetime import date, datetime
+                epoch = date(1899, 12, 30)
+                now = datetime.now()
+                days = (now.date() - epoch).days
+                return days if fn == 'TODAY' else days + (now.hour*3600 + now.minute*60 + now.second)/86400.0
+            if fn in ('DATE', 'YEAR', 'MONTH', 'DAY'):
+                from datetime import date
+                epoch = date(1899, 12, 30)
+                if fn == 'DATE':
+                    if len(args) != 3: raise FormulaError('#VALUE!')
+                    year, month, day = [int(self.arg(a)) for a in args]
+                    if year < 1900: year += 1900
+                    result_date = date(year, 1, 1)
+                    from datetime import timedelta
+                    result_date = result_date + timedelta(days=day-1) + timedelta(days=(month-1)*30) if month < 1 or month > 12 else date(year, month, 1) + timedelta(days=day-1)
+                    return (result_date - epoch).days
+                if len(args) != 1: raise FormulaError('#VALUE!')
+                serial = int(self._number(self.arg(args[0])))
+                from datetime import timedelta
+                result_date = epoch + timedelta(days=serial)
+                return result_date.year if fn == 'YEAR' else result_date.month if fn == 'MONTH' else result_date.day
+            if fn in ('SUM', 'AVERAGE', 'MIN', 'MAX', 'COUNT', 'MEDIAN', 'PRODUCT'):
                 vals = []
                 for a in args:
                     part = self.range(a) if _is_range(a) else [self.arg(a)]
@@ -200,10 +222,46 @@ class Evaluator:
                 if fn == 'AVERAGE': return sum(nums)/len(nums) if nums else FormulaError('#DIV/0!').code
                 if fn == 'MIN': return min(nums) if nums else 0
                 if fn == 'MAX': return max(nums) if nums else 0
+                if fn == 'MEDIAN':
+                    if not nums: return 0
+                    nums.sort(); mid = len(nums)//2
+                    return nums[mid] if len(nums)%2 else (nums[mid-1]+nums[mid])/2
+                if fn == 'PRODUCT':
+                    result = 1.0
+                    for number in nums: result *= number
+                    return result
                 return len(nums)
             if fn == 'IF':
                 if len(args) not in (2, 3): raise FormulaError('#VALUE!')
                 return self.arg(args[1] if self._truth(self.arg(args[0])) else (args[2] if len(args) == 3 else 'FALSE'))
+            if fn in ('SUMIFS', 'COUNTIFS', 'AVERAGEIFS', 'MINIFS', 'MAXIFS'):
+                if len(args) < 3 or (len(args) - (1 if fn in ('SUMIFS','AVERAGEIFS','MINIFS','MAXIFS') else 0)) % 2 != 0:
+                    raise FormulaError('#VALUE!')
+                if fn in ('SUMIFS', 'AVERAGEIFS', 'MINIFS', 'MAXIFS'):
+                    value_range = self.range(args[0]); pairs = args[1:]
+                else:
+                    value_range = None; pairs = args
+                if len(pairs) < 2 or len(pairs) % 2:
+                    raise FormulaError('#VALUE!')
+                criteria_ranges = [self.range(pairs[i]) for i in range(0, len(pairs), 2)]
+                criteria = [self.arg(pairs[i]) for i in range(1, len(pairs), 2)]
+                expected = len(value_range) if value_range is not None else len(criteria_ranges[0])
+                if any(len(r) != expected for r in criteria_ranges) or (value_range is not None and any(len(r) != expected for r in criteria_ranges)):
+                    raise FormulaError('#VALUE!')
+                selected = [i for i in range(expected) if all(self.matches(r[i], c) for r, c in zip(criteria_ranges, criteria))]
+                if fn == 'COUNTIFS': return len(selected)
+                nums = [self._number(value_range[i]) for i in selected if value_range[i] is not None and value_range[i] != '']
+                if fn == 'SUMIFS': return sum(nums)
+                if fn == 'AVERAGEIFS': return sum(nums) / len(nums) if nums else FormulaError('#DIV/0!').code
+                if fn == 'MINIFS': return min(nums) if nums else 0
+                if fn == 'MAXIFS': return max(nums) if nums else 0
+            if fn in ('AVERAGEIF',):
+                if len(args) not in (2, 3): raise FormulaError('#VALUE!')
+                criteria_range = self.range(args[0]); criterion = self.arg(args[1])
+                values = self.range(args[2]) if len(args) == 3 else criteria_range
+                if len(values) != len(criteria_range): raise FormulaError('#VALUE!')
+                nums = [self._number(values[i]) for i, value in enumerate(criteria_range) if self.matches(value, criterion) and values[i] is not None and values[i] != '']
+                return sum(nums) / len(nums) if nums else FormulaError('#DIV/0!').code
             if fn in ('COUNTIF', 'SUMIF'):
                 if len(args) not in (2, 3): raise FormulaError('#VALUE!')
                 vals = self.range(args[0])
@@ -366,13 +424,14 @@ class Evaluator:
                 start, count = int(self.arg(args[1])), int(self.arg(args[2]))
                 if start < 1 or count < 0: raise FormulaError('#VALUE!')
                 return value[start-1:start-1+count]
-            if fn == 'IFERROR':
+            if fn in ('IFERROR', 'IFNA'):
                 if len(args) != 2: raise FormulaError('#VALUE!')
                 try:
                     result = self.arg(args[0])
                 except FormulaError as exc:
                     result = exc.code
-                return self.arg(args[1]) if isinstance(result, str) and result.startswith('#') else result
+                is_error = isinstance(result, str) and result.startswith('#')
+                return self.arg(args[1]) if (is_error and (fn == 'IFERROR' or result == '#N/A')) else result
             if fn == 'AND': return all(self._truth(self.arg(a)) for a in args)
             if fn == 'OR': return any(self._truth(self.arg(a)) for a in args)
             if fn == 'NOT': return not self._truth(self.arg(args[0]))

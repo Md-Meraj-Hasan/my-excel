@@ -744,7 +744,7 @@ class MainActivity : Activity() {
     }
 
     private fun formulaPickerMenu() {
-        val formulas = arrayOf("SUM", "AVERAGE", "COUNT", "COUNTA", "MAX", "MIN", "MEDIAN", "PRODUCT", "IF", "IFERROR", "AND", "OR", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "SQRT", "POWER", "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS", "AVERAGEIF", "CONCAT", "CONCATENATE", "LEFT", "RIGHT", "MID", "LEN", "TRIM", "UPPER", "LOWER", "PROPER", "TODAY", "NOW", "DATE", "YEAR", "MONTH", "DAY")
+        val formulas = arrayOf("SUM", "AVERAGE", "COUNT", "COUNTA", "MAX", "MIN", "MEDIAN", "PRODUCT", "IF", "IFERROR", "IFNA", "AND", "OR", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "SQRT", "POWER", "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS", "AVERAGEIF", "AVERAGEIFS", "MINIFS", "MAXIFS", "CONCAT", "CONCATENATE", "LEFT", "RIGHT", "MID", "LEN", "TRIM", "UPPER", "LOWER", "PROPER", "TODAY", "NOW", "DATE", "YEAR", "MONTH", "DAY")
         AlertDialog.Builder(this).setTitle("Choose formula")
             .setItems(formulas) { _, which ->
                 formula.setText("=" + formulas[which] + "(")
@@ -1315,13 +1315,14 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
     fun evalText(expr: String): String? {
         val s = expr.trim()
         if (s.startsWith("\"") && s.endsWith("\"") && s.length >= 2) return s.substring(1, s.length - 1).replace("\"\"", "\"")
-        val ifErrorMatch = Regex("(?i)^IFERROR\\((.*)\\)$").matchEntire(s)
+        val ifErrorMatch = Regex("(?i)^(IFERROR|IFNA)\\((.*)\\)$").matchEntire(s)
         if (ifErrorMatch != null) {
-            val args = splitArgs(ifErrorMatch.groupValues[1])
+            val errorFunction = ifErrorMatch.groupValues[1].uppercase(Locale.US)
+            val args = splitArgs(ifErrorMatch.groupValues[2])
             if (args.size >= 2) {
                 val first = args[0].trim()
                 val result = runCatching { evalText(first) ?: formatSimple(eval(first)) }.getOrNull()
-                if (result != null && result != "#ERROR" && result != "#NUM!") return result
+                if (result != null && result != "#ERROR" && result != "#NUM!" && (errorFunction == "IFERROR" || result != "#N/A")) return result
                 return evalText(args[1]) ?: runCatching { formatSimple(eval(args[1])) }.getOrElse { args[1].trim().trim('"') }
             }
             return null
@@ -1343,7 +1344,7 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
             }
             return null
         }
-        val call = Regex("(?i)^(CONCATENATE|CONCAT|LEFT|RIGHT|MID|LEN|LOWER|UPPER|TRIM|PROPER|SUBSTITUTE|REPLACE|FIND|SEARCH|TEXTJOIN)\\((.*)\\)$").matchEntire(s) ?: return null
+        val call = Regex("(?i)^(XLOOKUP|VLOOKUP|CONCATENATE|CONCAT|LEFT|RIGHT|MID|LEN|LOWER|UPPER|TRIM|PROPER|SUBSTITUTE|REPLACE|FIND|SEARCH|TEXTJOIN)\\((.*)\\)$").matchEntire(s) ?: return null
         val name = call.groupValues[1].uppercase(Locale.US)
         val args = splitArgs(call.groupValues[2])
         fun textArg(arg: String): String {
@@ -1356,6 +1357,69 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
                 return raw
             }
             return runCatching { formatSimple(eval(a)) }.getOrElse { a }
+        }
+        if (name == "XLOOKUP") {
+            if (args.size !in 3..6) return "#VALUE!"
+            val lookup = textArg(args[0])
+            val lookupCells = range(args[1])
+            val returnCells = range(args[2])
+            if (lookupCells.size != returnCells.size) return "#VALUE!"
+            val notFound = if (args.size >= 4) textArg(args[3]) else "#N/A"
+            val matchMode = if (args.size >= 5) runCatching { eval(args[4]).toInt() }.getOrDefault(0) else 0
+            val searchMode = if (args.size >= 6) runCatching { eval(args[5]).toInt() }.getOrDefault(1) else 1
+            if (matchMode !in listOf(-1, 0, 1, 2) || searchMode !in listOf(-2, -1, 1, 2)) return "#VALUE!"
+            fun normalized(v: String): String = v.trim().toDoubleOrNull()?.let { String.format(Locale.US, "%.12g", it) } ?: v.trim().lowercase(Locale.US)
+            val indices = if (searchMode == -1 || searchMode == -2) lookupCells.indices.reversed() else lookupCells.indices
+            for (i in indices) {
+                val raw = cells[lookupCells[i]].orEmpty()
+                val value = if (raw.startsWith("=")) evalText(raw.drop(1)) ?: runCatching { formatSimple(eval(raw.drop(1))) }.getOrDefault("#ERROR") else raw
+                val exact = normalized(value) == normalized(lookup)
+                val wildcard = matchMode == 2 && Regex("^" + Regex.escape(lookup).replace("\\*", ".*").replace("\\?", ".") + "$", RegexOption.IGNORE_CASE).matches(value)
+                if (exact || wildcard) return textArg(returnCells[i])
+            }
+            if (matchMode == -1 || matchMode == 1) {
+                val target = lookup.trim().toDoubleOrNull()
+                if (target != null) {
+                    val candidates = lookupCells.indices.mapNotNull { i ->
+                        val raw = cells[lookupCells[i]].orEmpty()
+                        val n = raw.trim().toDoubleOrNull()
+                        if (n != null && (if (matchMode == -1) n <= target else n >= target)) Triple(n, i, returnCells[i]) else null
+                    }
+                    val chosen = if (matchMode == -1) candidates.maxByOrNull { it.first } else candidates.minByOrNull { it.first }
+                    if (chosen != null) return textArg(chosen.third)
+                }
+            }
+            return notFound
+        }
+        if (name == "VLOOKUP") {
+            if (args.size !in 3..4) return "#VALUE!"
+            val lookup = textArg(args[0])
+            val tableCells = range(args[1])
+            val bounds = args[1].trim().split(":")
+            if (bounds.size != 2) return "#VALUE!"
+            val start = runCatching { splitAddress(bounds[0]) }.getOrNull() ?: return "#VALUE!"
+            val end = runCatching { splitAddress(bounds[1]) }.getOrNull() ?: return "#VALUE!"
+            val width = kotlin.math.abs(end.first - start.first) + 1
+            val height = kotlin.math.abs(end.second - start.second) + 1
+            val colIndex = runCatching { eval(args[2]).toInt() }.getOrDefault(0)
+            if (colIndex < 1 || colIndex > width) return "#REF!"
+            val approximate = args.size == 4 && textArg(args[3]).equals("TRUE", true)
+            fun norm(v: String): String = v.trim().toDoubleOrNull()?.let { String.format(Locale.US, "%.12g", it) } ?: v.trim().lowercase(Locale.US)
+            var selectedRow = -1
+            var bestNumeric = Double.NEGATIVE_INFINITY
+            for (r in 0 until height) {
+                val keyIndex = r * width
+                val address = tableCells.getOrNull(keyIndex) ?: continue
+                val raw = cells[address].orEmpty()
+                val value = if (raw.startsWith("=")) evalText(raw.drop(1)) ?: runCatching { formatSimple(eval(raw.drop(1))) }.getOrDefault("#ERROR") else raw
+                if (norm(value) == norm(lookup)) { selectedRow = r; break }
+                if (approximate) {
+                    val n = value.trim().toDoubleOrNull(); val target = lookup.trim().toDoubleOrNull()
+                    if (n != null && target != null && n <= target && n > bestNumeric) { bestNumeric = n; selectedRow = r }
+                }
+            }
+            if (selectedRow < 0) return "#N/A"
+            return textArg(tableCells[selectedRow * width + colIndex - 1])
         }
         val joined = args.joinToString("") { textArg(it) }
         return when (name) {
@@ -1391,11 +1455,23 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
 
     fun eval(expr:String):Double {
         val s=expr.trim()
-        val fn=Regex("(?i)^(SUM|AVERAGE|MIN|MAX|COUNT|COUNTA|COUNTIF|SUMIF|PRODUCT|ABS|SQRT|INT|ROUND|ROUNDUP|ROUNDDOWN|CEILING|FLOOR|MOD|POWER|COUNTBLANK|SUBTOTAL)\\((.*)\\)$").matchEntire(s)
+        if (Regex("(?i)^TODAY\\(\\)$").matches(s)) return ChronoUnit.DAYS.between(LocalDate.of(1899,12,30), LocalDate.now()).toDouble()
+        if (Regex("(?i)^NOW\\(\\)$").matches(s)) {
+            val now=LocalDateTime.now(); return ChronoUnit.DAYS.between(LocalDate.of(1899,12,30), now.toLocalDate()).toDouble() + (now.hour*3600+now.minute*60+now.second)/86400.0
+        }
+        val dateFn=Regex("(?i)^(DATE|YEAR|MONTH|DAY)\\((.*)\\)$").matchEntire(s)
+        if(dateFn!=null) {
+            val name=dateFn.groupValues[1].uppercase(Locale.US); val a=splitArgs(dateFn.groupValues[2])
+            return when(name) {
+                "DATE" -> { if(a.size!=3) error("DATE requires 3 arguments"); var year=eval(a[0]).toInt(); val month=eval(a[1]).toInt(); val day=eval(a[2]).toInt(); if(year<1900) year+=1900; LocalDate.of(year,1,1).plusMonths((month-1).toLong()).plusDays((day-1).toLong()).toEpochDay().minus(LocalDate.of(1899,12,30).toEpochDay()).toDouble() }
+                else -> { if(a.size!=1) error("Date function requires 1 argument"); val date=LocalDate.of(1899,12,30).plusDays(eval(a[0]).toLong()); when(name) { "YEAR" -> date.year.toDouble(); "MONTH" -> date.monthValue.toDouble(); else -> date.dayOfMonth.toDouble() } }
+            }
+        }
+        val fn=Regex("(?i)^(SUM|AVERAGE|MIN|MAX|MEDIAN|COUNT|COUNTA|COUNTIF|COUNTIFS|SUMIF|SUMIFS|AVERAGEIF|AVERAGEIFS|MINIFS|MAXIFS|PRODUCT|ABS|SQRT|INT|ROUND|ROUNDUP|ROUNDDOWN|CEILING|FLOOR|MOD|POWER|COUNTBLANK|SUBTOTAL)\\((.*)\\)$").matchEntire(s)
         if(fn!=null) {
             val name=fn.groupValues[1].uppercase(Locale.US)
             val args=splitArgs(fn.groupValues[2])
-            if(name in listOf("SUM","AVERAGE","MIN","MAX","COUNT","COUNTA","PRODUCT")) {
+            if(name in listOf("SUM","AVERAGE","MIN","MAX","MEDIAN","COUNT","COUNTA","PRODUCT")) {
                 val addresses = args.flatMap { arg -> if (arg.contains(":")) range(arg) else if (Regex("(?i)^[A-Z]+[0-9]+$").matches(arg.trim())) listOf(arg.trim().uppercase(Locale.US)) else emptyList() }
                 val literals = args.filterNot { it.contains(":") || Regex("(?i)^[A-Z]+[0-9]+$").matches(it.trim()) }.mapNotNull { it.trim().toDoubleOrNull() }
                 val rawValues = addresses.mapNotNull { cells[it] }
@@ -1405,6 +1481,7 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
                     "AVERAGE" -> if(vals.isEmpty()) 0.0 else vals.average()
                     "MIN" -> vals.minOrNull() ?: 0.0
                     "MAX" -> vals.maxOrNull() ?: 0.0
+                    "MEDIAN" -> if (vals.isEmpty()) 0.0 else vals.sorted().let { sorted -> if (sorted.size % 2 == 1) sorted[sorted.size/2] else (sorted[sorted.size/2-1] + sorted[sorted.size/2]) / 2.0 }
                     "COUNT" -> vals.size.toDouble()
                     "COUNTA" -> (rawValues.count { it.isNotEmpty() } + literals.size).toDouble()
                     else -> vals.fold(1.0) { acc, v -> acc * v }
@@ -1420,6 +1497,27 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
             if(name=="ROUND" && args.isNotEmpty()) { val n=if(args.size>1) eval(args[1]).toInt().coerceIn(0,10) else 0; val f=Math.pow(10.0,n.toDouble()); return kotlin.math.round(eval(args[0])*f)/f }
             if(name=="MOD" && args.size==2) return eval(args[0]) % eval(args[1])
             if(name=="POWER" && args.size==2) return Math.pow(eval(args[0]),eval(args[1]))
+            if(name=="AVERAGEIF" && args.size in 2..3) {
+                val criteriaRange=range(args[0]); val valueRange=if(args.size==3) range(args[2]) else criteriaRange
+                if(criteriaRange.size!=valueRange.size) error("Range size mismatch")
+                val nums=criteriaRange.indices.filter { matches(cells[criteriaRange[it]].orEmpty(),args[1]) }.mapNotNull { numeric(valueRange[it]) }
+                return if(nums.isEmpty()) 0.0 else nums.average()
+            }
+            if(name in listOf("SUMIFS","COUNTIFS","AVERAGEIFS","MINIFS","MAXIFS")) {
+                val hasValueRange=name in listOf("SUMIFS","AVERAGEIFS","MINIFS","MAXIFS")
+                val offset=if(hasValueRange) 1 else 0
+                if(args.size < offset+2 || (args.size-offset)%2!=0) error("Invalid criteria arguments")
+                val valueRange=if(hasValueRange) range(args[0]) else emptyList()
+                val pairs=args.drop(offset)
+                val criteriaRanges=pairs.filterIndexed { i, _ -> i%2==0 }.map { range(it) }
+                val criteria=pairs.filterIndexed { i, _ -> i%2==1 }
+                val size=criteriaRanges.firstOrNull()?.size ?: 0
+                if(criteriaRanges.any { it.size!=size } || (hasValueRange && valueRange.size!=size)) error("Range size mismatch")
+                val selected=(0 until size).filter { i -> criteriaRanges.indices.all { j -> matches(cells[criteriaRanges[j][i]].orEmpty(),criteria[j]) } }
+                if(name=="COUNTIFS") return selected.size.toDouble()
+                val nums=selected.mapNotNull { numeric(valueRange[it]) }
+                return when(name) { "SUMIFS" -> nums.sum(); "AVERAGEIFS" -> if(nums.isEmpty()) 0.0 else nums.average(); "MINIFS" -> nums.minOrNull()?:0.0; else -> nums.maxOrNull()?:0.0 }
+            }
             if(name=="COUNTIF" && args.size==2) return range(args[0]).count { matches(cells[it].orEmpty(),args[1]) }.toDouble()
             if(name=="COUNTBLANK" && args.size==1) return range(args[0]).count { cells[it].isNullOrEmpty() }.toDouble()
             if(name=="SUBTOTAL" && args.size>=2) {

@@ -52,4 +52,38 @@ class FormulaEngineTest {
         assertEquals(15.0, engine.eval("AVERAGE(B1:B2)"), 0.0001)
         assertEquals(2.0, engine.eval("COUNT(B1:B3)"), 0.0001)
     }
+    @Test fun xlookupReturnsMatchingTextValue() {
+        val e = FormulaEngine(mapOf("A1" to "Nisha", "B1" to "N-01", "A2" to "Ravi", "B2" to "R-02"))
+        assertEquals("R-02", e.evalText("XLOOKUP(\"rAvI\",A1:A2,B1:B2)"))
+    }
+
+    @Test fun xlookupSupportsNumericTextAndNotFound() {
+        val e = FormulaEngine(mapOf("A1" to "101", "B1" to "A", "A2" to "102", "B2" to "B"))
+        assertEquals("B", e.evalText("XLOOKUP(102,A1:A2,B1:B2)"))
+        assertEquals("missing", e.evalText("XLOOKUP(999,A1:A2,B1:B2,\"missing\")"))
+    }
+
+    @Test fun vlookupReturnsMatchingColumn() {
+        val e = FormulaEngine(mapOf("A1" to "101", "B1" to "Nisha", "A2" to "102", "B2" to "Ravi"))
+        assertEquals("Ravi", e.evalText("VLOOKUP(102,A1:B2,2,FALSE)"))
+    }
+
+
+
+    @Test fun calculatesDateFunctions() {
+        val e = FormulaEngine(emptyMap())
+        assertEquals(45292.0, e.eval("DATE(2024,1,1)"), 0.0001)
+        assertEquals(2024.0, e.eval("YEAR(45292)"), 0.0001)
+        assertEquals(1.0, e.eval("MONTH(45292)"), 0.0001)
+        assertEquals(1.0, e.eval("DAY(45292)"), 0.0001)
+    }
+
+    @Test fun calculatesCommonMissingAggregateAndCriteriaFunctions() {
+        val e = FormulaEngine(mapOf("A2" to "East", "B2" to "100", "A3" to "West", "B3" to "50", "A4" to "East", "B4" to "25", "C1" to "1", "C2" to "9", "C3" to "5"))
+        assertEquals(125.0, e.eval("SUMIFS(B2:B4,A2:A4,\"East\")"), 0.0001)
+        assertEquals(1.0, e.eval("COUNTIFS(A2:A4,\"East\",B2:B4,\">50\")"), 0.0001)
+        assertEquals(62.5, e.eval("AVERAGEIF(A2:A4,\"East\",B2:B4)"), 0.0001)
+        assertEquals(5.0, e.eval("MEDIAN(C1:C3)"), 0.0001)
+    }
+
 }
