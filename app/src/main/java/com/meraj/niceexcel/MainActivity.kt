@@ -806,7 +806,7 @@ class MainActivity : Activity() {
             val column = columnIndex(match.groupValues[1])
             val row = match.groupValues[2].toIntOrNull() ?: return@forEach
             if (column in 0 until colLimit && row !in wrappedRows) {
-                longestByColumn[column] = max(longestByColumn[column], display(address).length)
+                longestByColumn[column] = max(longestByColumn[column], displayForGrid(address).length)
             }
         }
         val columnWidths = longestByColumn.map { max(28, minOf(360, it * 7 + 18)) }
@@ -993,6 +993,8 @@ class MainActivity : Activity() {
         if (canReuseGrid) {
             refreshVisibleCells()
             renderTabs()
+            // Formula cells are rendered from cache; evaluate missing values off the UI thread.
+            scheduleFormulaRecalculation()
             Log.d("NiceExcelPerf", "render sheet=$sheetName mode=reuse ms=${SystemClock.elapsedRealtime() - perfStarted}")
             return
         }
@@ -1012,7 +1014,7 @@ class MainActivity : Activity() {
             val column = columnIndex(match.groupValues[1])
             val row = match.groupValues[2].toIntOrNull() ?: return@forEach
             if (column in 0 until colLimit && row !in wrappedRows) {
-                val shownLength = display(address).length
+                val shownLength = displayForGrid(address).length
                 if (shownLength > longestByColumn[column]) longestByColumn[column] = shownLength
             }
         }
@@ -1040,6 +1042,8 @@ class MainActivity : Activity() {
         // Bottom Add Row bar removed: row insertion remains available in the Insert ribbon.
         applyMergedCellPresentation()
         renderTabs()
+        // Do not evaluate formulas while constructing hundreds of cell views.
+        scheduleFormulaRecalculation()
         Log.d("NiceExcelPerf", "render sheet=$sheetName mode=rebuild cells=${cellViews.size} ms=${SystemClock.elapsedRealtime() - perfStarted}")
     }
 
@@ -1090,7 +1094,7 @@ class MainActivity : Activity() {
         // Re-evaluate formula cells in-place so simple dependencies stay current without
         // destroying/recreating every cell view after each Enter key press.
         data.keys.filter { data[it].orEmpty().startsWith("=") }.forEach { formulaAddress ->
-            val formulaText = display(formulaAddress)
+            val formulaText = displayForGrid(formulaAddress)
             val formulaMatch = Regex("^([A-Z]+)(\\d+)$").matchEntire(formulaAddress) ?: return@forEach
             val formulaCol = columnIndex(formulaMatch.groupValues[1])
             if (formulaText.length * 7 + 18 > (lastColumnWidths.getOrNull(formulaCol) ?: 0)) {
@@ -1106,7 +1110,7 @@ class MainActivity : Activity() {
         val name = colName(column)
         val longest = data.entries.asSequence()
             .filter { it.key.startsWith(name) && it.key.drop(name.length).toIntOrNull() != null }
-            .map { display(it.key).length }
+            .map { displayForGrid(it.key).length }
             .maxOrNull() ?: name.length
         // Three-character default; auto-expand by one character-space per extra character.
         return max(28, minOf(360, longest * 7 + 18))
@@ -1143,7 +1147,7 @@ class MainActivity : Activity() {
      * another cell in the same column has caused that column to auto-expand.
      */
     private fun gridDisplay(address: String): String {
-        val raw = display(address)
+        val raw = displayForGrid(address)
         val row = Regex("^[A-Z]+(\\d+)$").matchEntire(address)
             ?.groupValues?.get(1)?.toIntOrNull()
         if (row == null || row !in wrappedRows || raw.contains('\n')) return raw
@@ -1602,6 +1606,7 @@ class MainActivity : Activity() {
             backgroundExecutor.execute {
                 val results = linkedMapOf<String, Pair<String, String>>()
                 formulas.forEach { (formulaSheet, address, raw) ->
+                    if (jobId != formulaRecalcJobId.get() || isFinishing || isDestroyed) return@forEach
                     val st = stylesSnapshot[formulaSheet]?.get(address)
                     val cacheKey = "$formulaSheet|$address|$raw|${st?.numberFormat ?: "General"}"
                     val rendered = runCatching {
@@ -2628,6 +2633,21 @@ class MainActivity : Activity() {
         backgroundExecutor.shutdownNow()
         super.onDestroy()
     }
+    /**
+     * Non-blocking display path for grid rendering and cell updates.
+     * A formula cache miss is calculated by scheduleFormulaRecalculation() on the worker.
+     */
+    private fun displayForGrid(address: String): String {
+        val raw = data[address] ?: return ""
+        val st = sheetStyles[address]
+        if (!raw.startsWith("=")) {
+            val n = raw.toDoubleOrNull()
+            return if (n != null && st != null) formatNumber(n, st.numberFormat, raw) else raw
+        }
+        val cacheKey = "$sheetName|$address|$raw|${st?.numberFormat ?: "General"}"
+        return formulaDisplayCache[cacheKey] ?: "…"
+    }
+
     private fun display(address:String):String {
         val raw=data[address] ?: return ""
         val st = sheetStyles[address]
