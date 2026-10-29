@@ -108,6 +108,8 @@ class MainActivity : Activity() {
     // Rows in this set wrap text into at most two lines; other rows stay single-line.
     private val wrappedRowsBySheet = mutableMapOf<String, MutableSet<Int>>()
     private val wrappedRows get() = wrappedRowsBySheet.getOrPut(sheetName) { mutableSetOf() }
+    // Cache row line counts within a render cycle to avoid repeated full-sheet scans.
+    private val rowLineCountCache = mutableMapOf<Int, Int>()
 
     private val data get() = sheets.getOrPut(sheetName) { mutableMapOf() }
     private val sheetStyles get() = styles.getOrPut(sheetName) { mutableMapOf() }
@@ -604,6 +606,7 @@ class MainActivity : Activity() {
             .setTitle("Row $row text layout")
             .setSingleChoiceItems(arrayOf("Single line (auto-expand column)", "Double line (wrap text)"), if (isWrapped) 1 else 0) { dialog, which ->
                 if (which == 1) wrappedRows.add(row) else wrappedRows.remove(row)
+                rowLineCountCache.clear()
                 dialog.dismiss()
                 render()
                 status.text = if (which == 1) "Row $row set to double-line text" else "Row $row set to single-line text"
@@ -770,6 +773,7 @@ class MainActivity : Activity() {
 
     /** Refresh existing cells in place, including widths, instead of rebuilding 1,300 TextViews. */
     private fun refreshVisibleCells() {
+        rowLineCountCache.clear()
         val perfStarted = SystemClock.elapsedRealtime()
         val longestByColumn = IntArray(colLimit) { c -> colName(c).length }
         val addressPattern = Regex("^([A-Z]+)(\\d+)$")
@@ -953,6 +957,7 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
+        rowLineCountCache.clear()
         val perfStarted = SystemClock.elapsedRealtime()
         // Treat a full/in-place render as a workbook-state boundary. Any background
         // snapshot started before this boundary must revalidate before committing.
@@ -1085,15 +1090,23 @@ class MainActivity : Activity() {
 
     /** Row height follows explicit newlines in cell values, while preserving the existing
      * two-line row mode. Cap at six visible lines to keep the grid usable on mobile. */
-    private fun rowLineCount(row: Int): Int {
-        val explicitLines = data.entries.asSequence()
-            .filter { Regex("^[A-Z]+(\\d+)$").matchEntire(it.key)?.groupValues?.get(1)?.toIntOrNull() == row }
-            .map { it.value.count { ch -> ch == '\n' } + 1 }
-            .maxOrNull() ?: 1
-        return max(if (row in wrappedRows) 2 else 1, explicitLines).coerceIn(1, 6)
+    private val cellAddressPatternForRows = Regex("^([A-Z]+)(\\d+)$")
+
+    private fun rowLineCount(row: Int): Int = rowLineCountCache.getOrPut(row) {
+        // Calculate each row's line count once per refresh cycle, not once per cell.
+        var explicitLines = 1
+        for ((address, value) in data) {
+            val match = cellAddressPatternForRows.matchEntire(address) ?: continue
+            if (match.groupValues[2].toIntOrNull() != row) continue
+            explicitLines = max(explicitLines, value.count { ch -> ch == '\n' } + 1)
+        }
+        max(if (row in wrappedRows) 2 else 1, explicitLines).coerceIn(1, 6)
     }
 
-    private fun rowHeightPx(row: Int): Int = if (rowLineCount(row) == 1) 24 else 24 * rowLineCount(row) + 4
+    private fun rowHeightPx(row: Int): Int {
+        val lines = rowLineCount(row)
+        return if (lines == 1) 24 else 24 * lines + 4
+    }
 
     /**
      * Display value used only inside the grid. In double-line mode, split at the first
@@ -1585,6 +1598,7 @@ class MainActivity : Activity() {
     }
 
     private fun putCell(address:String,value:String) {
+        rowLineCountCache.clear()
         workbookRevision.incrementAndGet()
         formulaDisplayCache.clear()
         undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
