@@ -97,6 +97,9 @@ class MainActivity : Activity() {
     // queue that target and start editing it after the previous editor commits.
     private var pendingEditAddress: String? = null
     private var keepEditingOnNextCellTap = false
+    // Commits an active inline edit when the IME is dismissed or Android Back is pressed.
+    private var activeInlineCommit: (() -> Unit)? = null
+    private var keyboardWasVisible = false
     private var selectedRangeCells: List<String> = emptyList()
     private var selectedRangeLabel: String? = null
     // Rows in this set wrap text into at most two lines; other rows stay single-line.
@@ -199,7 +202,6 @@ class MainActivity : Activity() {
         formula=EditText(this).apply { setSingleLine(true); textSize=14f; hint="Enter value or formula"; inputType=InputType.TYPE_CLASS_TEXT; setPadding(dp(8),dp(3),dp(8),dp(3)); setBackgroundColor(Color.WHITE); setText(data[selected].orEmpty()); setOnEditorActionListener { _,_,_ -> applyFormula(); true } }
         formulaBar.addView(formula,LinearLayout.LayoutParams(0,-2,1f))
         formulaBar.addView(TextView(this).apply { text="ƒx ▾"; textSize=12f; setTextColor(Color.rgb(17,94,57)); setPadding(dp(7),dp(10),dp(7),dp(10)); setOnClickListener { formulaPickerMenu() } })
-        formulaBar.addView(TextView(this).apply { text="✓"; textSize=23f; setTextColor(Color.rgb(17,125,72)); setPadding(dp(10),dp(4),dp(10),dp(4)); setOnClickListener { applyFormula() } })
         root.addView(formulaBar)
 
         // Keep the column letters and worksheet row 1 outside the vertical scroller.
@@ -272,6 +274,17 @@ class MainActivity : Activity() {
         status=TextView(this).apply { text="Ready • Offline workbook"; textSize=12f; setTextColor(Color.WHITE); setPadding(dp(10),dp(7),dp(10),dp(7)); setBackgroundColor(Color.rgb(20,30,40)) }
         root.addView(status)
         setContentView(root)
+        // Save inline edits when the keyboard is dismissed (including Android navigation Back).
+        // Delay the commit briefly so switching focus between cells does not look like a dismissal.
+        root.viewTreeObserver.addOnGlobalLayoutListener {
+            val visibleNow = isSoftKeyboardVisible()
+            if (keyboardWasVisible && !visibleNow) {
+                mainHandler.postDelayed({
+                    if (!isSoftKeyboardVisible()) activeInlineCommit?.invoke()
+                }, 220L)
+            }
+            keyboardWasVisible = visibleNow
+        }
         render()
     }
 
@@ -604,14 +617,14 @@ class MainActivity : Activity() {
                 val frozenCell = frozenFirstRow.getChildAt(c + 1)
                 frozenCell.layoutParams = (frozenCell.layoutParams ?: LinearLayout.LayoutParams(width, dp(24))).apply {
                     this.width = width
-                    height = dp(if (1 in wrappedRows) 52 else 24)
+                    height = dp(rowHeightPx(1))
                 }
             }
         }
         for (i in 0 until grid.childCount) {
             val rowView = grid.getChildAt(i) as? LinearLayout ?: continue
             val row = rowView.tag as? Int ?: (i + 2)
-            val rowHeight = if (row in wrappedRows) 52 else 24
+            val rowHeight = rowHeightPx(row)
             rowView.visibility = if (rowPassesFilter(row)) android.view.View.VISIBLE else android.view.View.GONE
             rowView.layoutParams = (rowView.layoutParams ?: LinearLayout.LayoutParams(-2, dp(rowHeight))).apply { height = dp(rowHeight) }
             rowView.minimumHeight = dp(rowHeight)
@@ -637,7 +650,7 @@ class MainActivity : Activity() {
             view.paint.isUnderlineText = st?.underline == true
             view.gravity = st?.alignment ?: (Gravity.CENTER_VERTICAL or Gravity.START)
             val row = Regex("^[A-Z]+(\\d+)$").matchEntire(address)?.groupValues?.get(1)?.toIntOrNull()
-            view.maxLines = if (row != null && row in wrappedRows) 2 else 1
+            view.maxLines = if (row != null) rowLineCount(row) else 1
             view.ellipsize = if (view.maxLines == 2) null else android.text.TextUtils.TruncateAt.END
             applyCellBackground(view, address, false)
         }
@@ -676,7 +689,7 @@ class MainActivity : Activity() {
             }
             if (frozenFirstRow.childCount > c + 1) {
                 val v = frozenFirstRow.getChildAt(c + 1)
-                val h = dp(if (1 in wrappedRows) 52 else 24)
+                val h = dp(rowHeightPx(1))
                 if (v.layoutParams.width != width || v.layoutParams.height != h) {
                     v.layoutParams = v.layoutParams.apply { this.width = width; height = h }
                 }
@@ -718,7 +731,7 @@ class MainActivity : Activity() {
             if (view.paint.isUnderlineText != (st?.underline == true)) view.paint.isUnderlineText = st?.underline == true
             val gravity = st?.alignment ?: (Gravity.CENTER_VERTICAL or Gravity.START)
             if (view.gravity != gravity) view.gravity = gravity
-            val maxLines = if (row in wrappedRows) 2 else 1
+            val maxLines = rowLineCount(row)
             if (view.maxLines != maxLines) view.maxLines = maxLines
             val desiredEllipsize = if (maxLines == 2) null else android.text.TextUtils.TruncateAt.END
             if (view.ellipsize != desiredEllipsize) view.ellipsize = desiredEllipsize
@@ -729,7 +742,7 @@ class MainActivity : Activity() {
         for (i in 0 until grid.childCount) {
             val rowView = grid.getChildAt(i) as? LinearLayout ?: continue
             val row = rowView.tag as? Int ?: (i + 2)
-            val height = dp(if (row in wrappedRows) 52 else 24)
+            val height = dp(rowHeightPx(row))
             val rowHeightChanged = rowView.layoutParams.height != height
             if (rowHeightChanged) rowView.layoutParams = rowView.layoutParams.apply { this.height = height }
             if (rowView.minimumHeight != height) rowView.minimumHeight = height
@@ -829,7 +842,7 @@ class MainActivity : Activity() {
     }
 
     private fun createRowView(row: Int, columnWidths: List<Int>): LinearLayout {
-        val rowHeight = if (row in wrappedRows) 52 else 24
+        val rowHeight = rowHeightPx(row)
         // Give the row itself an explicit height matching every child cell. Otherwise
         // Android can measure a wrapped TextView taller than its siblings and expose
         // an inset-looking second rectangle around only the multi-line cells.
@@ -892,6 +905,18 @@ class MainActivity : Activity() {
         return max(28, minOf(360, longest * 7 + 18))
     }
 
+    /** Row height follows explicit newlines in cell values, while preserving the existing
+     * two-line row mode. Cap at six visible lines to keep the grid usable on mobile. */
+    private fun rowLineCount(row: Int): Int {
+        val explicitLines = data.entries.asSequence()
+            .filter { Regex("^[A-Z]+(\\d+)$").matchEntire(it.key)?.groupValues?.get(1)?.toIntOrNull() == row }
+            .map { it.value.count { ch -> ch == '\n' } + 1 }
+            .maxOrNull() ?: 1
+        return max(if (row in wrappedRows) 2 else 1, explicitLines).coerceIn(1, 6)
+    }
+
+    private fun rowHeightPx(row: Int): Int = if (rowLineCount(row) == 1) 24 else 24 * rowLineCount(row) + 4
+
     /**
      * Display value used only inside the grid. In double-line mode, split at the first
      * whitespace so a row explicitly set to wrap actually displays two lines even when
@@ -901,7 +926,7 @@ class MainActivity : Activity() {
         val raw = display(address)
         val row = Regex("^[A-Z]+(\\d+)$").matchEntire(address)
             ?.groupValues?.get(1)?.toIntOrNull()
-        if (row == null || row !in wrappedRows) return raw
+        if (row == null || row !in wrappedRows || raw.contains('\n')) return raw
         val splitAt = raw.indexOfFirst { it.isWhitespace() }
         return if (splitAt > 0 && splitAt < raw.lastIndex) {
             raw.substring(0, splitAt) + "\n" + raw.substring(splitAt + 1).trimStart()
@@ -913,7 +938,7 @@ class MainActivity : Activity() {
             text=value; textSize=13f; gravity=if(header||key==null) Gravity.CENTER else Gravity.CENTER_VERTICAL or Gravity.START
             setSingleLine(false)
             val cellRow = key?.let { Regex("^[A-Z]+(\\d+)$").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }
-            maxLines = if (cellRow != null && cellRow in wrappedRows) 2 else 1
+            maxLines = if (cellRow != null) rowLineCount(cellRow) else 1
             ellipsize = if (maxLines == 2) null else android.text.TextUtils.TruncateAt.END
             setHorizontallyScrolling(false)
             // Preserve complete glyph ascenders/descenders and use consistent line spacing.
@@ -1146,16 +1171,54 @@ class MainActivity : Activity() {
         if (index < 0) return
         val params = cell.layoutParams
         val editor = EditText(this).apply {
-            setSingleLine(true)
+            // Ordinary text uses a multiline editor: keyboard Enter inserts a newline.
+            // Formula input keeps a Done action so Enter commits/evaluates the formula.
+            setSingleLine(false)
             textSize = cell.textSize / resources.displayMetrics.scaledDensity
             setText(data[address].orEmpty())
             setSelection(text.length)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setHorizontallyScrolling(false)
+            gravity = Gravity.TOP or Gravity.START
             setPadding(dp(3), 0, dp(3), 0)
             setBackgroundColor(Color.rgb(207, 239, 220))
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            imeOptions = (if (text.toString().trimStart().startsWith("=")) android.view.inputmethod.EditorInfo.IME_ACTION_DONE else android.view.inputmethod.EditorInfo.IME_ACTION_NONE) or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
             minHeight = dp(18)
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    val action = if (s?.toString()?.trimStart()?.startsWith("=") == true) android.view.inputmethod.EditorInfo.IME_ACTION_DONE else android.view.inputmethod.EditorInfo.IME_ACTION_NONE
+                    val nextOptions = action or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                    if (imeOptions != nextOptions) imeOptions = nextOptions
+                }
+                override fun afterTextChanged(s: android.text.Editable?) {}
+            })
         }
+        editor.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                // Let the editing cell grow as the user adds more lines so the caret
+                // remains visible instead of being clipped by the original row height.
+                val lineCount = editor.lineCount.coerceIn(1, 6)
+                val wantedHeight = dp(if (lineCount == 1) 24 else 24 * lineCount + 4)
+                val current = editor.layoutParams
+                if (current != null && current.height != wantedHeight) {
+                    current.height = wantedHeight
+                    editor.layoutParams = current
+                }
+                val rowView = parent
+                if (rowView != null && rowView.layoutParams.height != wantedHeight) {
+                    rowView.layoutParams = rowView.layoutParams.apply { height = wantedHeight }
+                    for (i in 0 until rowView.childCount) {
+                        val child = rowView.getChildAt(i)
+                        if (child !== editor && child.layoutParams.height != wantedHeight) {
+                            child.layoutParams = child.layoutParams.apply { height = wantedHeight }
+                        }
+                    }
+                }
+            }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
         editingAddress = address
         parent.removeViewAt(index)
         parent.addView(editor, index, params)
@@ -1169,8 +1232,13 @@ class MainActivity : Activity() {
             if (finished) return
             finished = true
             val newValue = editor.text.toString()
-            if (save) putCell(address, newValue)
+            if (save) {
+                putCell(address, newValue)
+                val row = Regex("^[A-Z]+(\\d+)$").matchEntire(address)?.groupValues?.get(1)?.toIntOrNull()
+                if (row != null && newValue.contains('\n')) wrappedRows.add(row)
+            }
             editingAddress = null
+            activeInlineCommit = null
             keepEditingOnNextCellTap = keepKeyboard
             if (!keepKeyboard) {
                 (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
@@ -1213,6 +1281,8 @@ class MainActivity : Activity() {
                 }
             }
         }
+        // This callback is also used if the keyboard is hidden with the system Back button.
+        activeInlineCommit = { finish(true) }
         editor.setOnEditorActionListener { _, actionId, event ->
             val enterPressed =
                 actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE ||
@@ -1220,8 +1290,8 @@ class MainActivity : Activity() {
                 actionId == android.view.inputmethod.EditorInfo.IME_ACTION_NEXT ||
                 (event != null && event.keyCode == android.view.KeyEvent.KEYCODE_ENTER &&
                     event.action == android.view.KeyEvent.ACTION_UP)
-            if (enterPressed) {
-                // One Enter/Done press saves the cell, dismisses the keyboard and exits inline edit.
+            if (enterPressed && editor.text.toString().trimStart().startsWith("=")) {
+                // Enter on a formula commits/evaluates it; for ordinary text, Enter inserts a newline.
                 finish(true)
                 true
             } else false
@@ -1234,6 +1304,15 @@ class MainActivity : Activity() {
         }
         editor.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) finish(true, keepKeyboard = true) }
     }
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        if (editingAddress != null) {
+            activeInlineCommit?.invoke()
+            return
+        }
+        super.onBackPressed()
+    }
+
     private fun isSoftKeyboardVisible(): Boolean {
         // getWindowVisibleDisplayFrame can be unreliable with edge-to-edge layouts on
         // recent Android versions. Prefer the IME inset API where available.
@@ -1765,9 +1844,9 @@ class MainActivity : Activity() {
             if (!horizontal && !vertical) return@forEach
             val anchor = cellViews[parts[0]] ?: return@forEach
             val baseWidth = dp(lastColumnWidths.getOrElse(c1) { 39 }).coerceAtLeast(1)
-            val baseHeight = dp(if (r1 in wrappedRows) 52 else 24).coerceAtLeast(1)
+            val baseHeight = dp(rowHeightPx(r1)).coerceAtLeast(1)
             val mergedWidth = if (horizontal) (c1..c2).sumOf { dp(lastColumnWidths.getOrElse(it) { 39 }) } else baseWidth
-            val mergedHeight = if (vertical) (r1..r2).sumOf { dp(if (it in wrappedRows) 52 else 24) } else baseHeight
+            val mergedHeight = if (vertical) (r1..r2).sumOf { dp(rowHeightPx(it)) } else baseHeight
             val scaleX = mergedWidth.toFloat() / baseWidth
             val scaleY = mergedHeight.toFloat() / baseHeight
             anchor.pivotX = 0f
