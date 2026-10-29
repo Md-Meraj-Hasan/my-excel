@@ -93,6 +93,9 @@ class MainActivity : Activity() {
     private var lastTapAddress: String? = null
     private var lastTapAt = 0L
     private var editingAddress: String? = null
+    // If a user taps another cell while an inline editor is still losing focus,
+    // queue that target and start editing it after the previous editor commits.
+    private var pendingEditAddress: String? = null
     private var keepEditingOnNextCellTap = false
     private var selectedRangeCells: List<String> = emptyList()
     private var selectedRangeLabel: String? = null
@@ -935,11 +938,24 @@ class MainActivity : Activity() {
                     val isDoubleTap = lastTapAddress == key && now - lastTapAt <= 350L
                     val keyboardAlreadyOpen = isSoftKeyboardVisible() || keepEditingOnNextCellTap
                     keepEditingOnNextCellTap = false
+                    val previousEditorAddress = editingAddress
                     select(key)
-                    if (keyboardAlreadyOpen || editingAddress != null || isDoubleTap) {
+                    if (keyboardAlreadyOpen || previousEditorAddress != null || isDoubleTap) {
                         lastTapAddress = null
                         lastTapAt = 0L
-                        startInlineEdit(cellViews[key] ?: this)
+                        // The old EditText can lose focus after this click callback. Do not
+                        // try to open a second editor synchronously: startInlineEdit() would
+                        // see editingAddress != null and silently return, leaving the newly
+                        // selected cell without a cursor. Queue it until the old edit commits.
+                        cellViews[key]?.post {
+                            if (editingAddress == null) {
+                                val target = cellViews[key] ?: this
+                                select(key)
+                                startInlineEdit(target)
+                            } else {
+                                pendingEditAddress = key
+                            }
+                        }
                     } else {
                         lastTapAddress = key
                         lastTapAt = now
@@ -1181,6 +1197,21 @@ class MainActivity : Activity() {
             }
             select(address)
             status.text = if (save) "Updated $sheetName!$address" else "Edit cancelled"
+
+            // Continue with a cell the user tapped while this editor was committing.
+            // This is deliberately after restoring the original TextView and refreshing
+            // the cell, so the next editor attaches to the live view and gets focus.
+            val nextAddress = pendingEditAddress
+            pendingEditAddress = null
+            if (keepKeyboard && nextAddress != null && nextAddress != address) {
+                mainHandler.post {
+                    val target = cellViews[nextAddress]
+                    if (target != null && editingAddress == null) {
+                        select(nextAddress)
+                        startInlineEdit(target)
+                    }
+                }
+            }
         }
         editor.setOnEditorActionListener { _, actionId, event ->
             val enterPressed =
