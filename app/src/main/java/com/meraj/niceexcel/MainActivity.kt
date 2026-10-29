@@ -82,6 +82,7 @@ class MainActivity : Activity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val filterJobId = AtomicInteger(0)
     private val sortJobId = AtomicInteger(0)
+    private val formulaRecalcJobId = AtomicInteger(0)
     // Incremented whenever the UI rebuilds after a workbook mutation; workers must
     // validate this token before committing snapshots computed from older state.
     private val workbookRevision = AtomicInteger(0)
@@ -92,6 +93,7 @@ class MainActivity : Activity() {
     private var lastTapAddress: String? = null
     private var lastTapAt = 0L
     private var editingAddress: String? = null
+    private var keepEditingOnNextCellTap = false
     private var selectedRangeCells: List<String> = emptyList()
     private var selectedRangeLabel: String? = null
     // Rows in this set wrap text into at most two lines; other rows stay single-line.
@@ -655,6 +657,8 @@ class MainActivity : Activity() {
         if (widths.size != colLimit) return false
         val started = SystemClock.elapsedRealtime()
         workbookRevision.incrementAndGet()
+        val previousWidths = lastColumnWidths
+        val widthsChanged = previousWidths != widths
         lastColumnWidths = widths
 
         // Update column widths only when the target sheet's cached widths differ.
@@ -678,13 +682,28 @@ class MainActivity : Activity() {
         // For a newly created blank sheet, avoid formula evaluation and expensive style lookups.
         val blankSheet = data.isEmpty() && sheetStyles.isEmpty() && wrappedRows.isEmpty()
         val cellRefreshStarted = SystemClock.elapsedRealtime()
-        val addressPattern = Regex("^[A-Z]+(\\d+)$")
+        val addressPattern = if (blankSheet) null else Regex("^[A-Z]+(\\d+)$")
         for ((address, view) in cellViews) {
-            val match = addressPattern.matchEntire(address)
+            // Blank-sheet creation is the hottest path: avoid parsing 1,300 cell
+            // addresses and touching every TextView property when most are already default.
+            if (blankSheet) {
+                if (view.text.isNotEmpty()) view.text = ""
+                if (view.currentTextColor != Color.rgb(24, 32, 39)) view.setTextColor(Color.rgb(24, 32, 39))
+                if (view.textSize != 13f) view.textSize = 13f
+                if (view.typeface?.style != Typeface.NORMAL) view.typeface = Typeface.DEFAULT
+                if (view.paint.isUnderlineText) view.paint.isUnderlineText = false
+                val defaultGravity = Gravity.CENTER_VERTICAL or Gravity.START
+                if (view.gravity != defaultGravity) view.gravity = defaultGravity
+                if (view.maxLines != 1) view.maxLines = 1
+                if (view.ellipsize != android.text.TextUtils.TruncateAt.END) view.ellipsize = android.text.TextUtils.TruncateAt.END
+                applyCellBackground(view, address, false)
+                continue
+            }
+            val match = addressPattern!!.matchEntire(address)
             val row = match?.groupValues?.get(1)?.toIntOrNull() ?: continue
-            val text = if (blankSheet) "" else display(address)
+            val text = display(address)
             if (view.text.toString() != text) view.text = text
-            val st = if (blankSheet) null else sheetStyles[address]
+            val st = sheetStyles[address]
             val textColor = st?.textColor ?: Color.rgb(24, 32, 39)
             if (view.currentTextColor != textColor) view.setTextColor(textColor)
             val textSize = st?.fontSize ?: 13f
@@ -692,7 +711,7 @@ class MainActivity : Activity() {
             val style = (if (st?.bold == true) Typeface.BOLD else Typeface.NORMAL) or
                 (if (st?.italic == true) Typeface.ITALIC else Typeface.NORMAL)
             if (view.typeface?.style != style) view.typeface = Typeface.create(Typeface.DEFAULT, style)
-            view.paint.isUnderlineText = st?.underline == true
+            if (view.paint.isUnderlineText != (st?.underline == true)) view.paint.isUnderlineText = st?.underline == true
             val gravity = st?.alignment ?: (Gravity.CENTER_VERTICAL or Gravity.START)
             if (view.gravity != gravity) view.gravity = gravity
             val maxLines = if (row in wrappedRows) 2 else 1
@@ -702,22 +721,28 @@ class MainActivity : Activity() {
             applyCellBackground(view, address, false)
         }
 
+        val filterActive = filterColumn != null && filterText != null
         for (i in 0 until grid.childCount) {
             val rowView = grid.getChildAt(i) as? LinearLayout ?: continue
             val row = rowView.tag as? Int ?: (i + 2)
             val height = dp(if (row in wrappedRows) 52 else 24)
-            if (rowView.layoutParams.height != height) {
-                rowView.layoutParams = rowView.layoutParams.apply { this.height = height }
-            }
+            val rowHeightChanged = rowView.layoutParams.height != height
+            if (rowHeightChanged) rowView.layoutParams = rowView.layoutParams.apply { this.height = height }
             if (rowView.minimumHeight != height) rowView.minimumHeight = height
-            val visibility = if (rowPassesFilter(row)) android.view.View.VISIBLE else android.view.View.GONE
-            if (rowView.visibility != visibility) rowView.visibility = visibility
-            for (c in 0 until minOf(colLimit + 1, rowView.childCount)) {
-                val child = rowView.getChildAt(c)
-                val width = dp(if (c == 0) 48 else widths[c - 1])
-                val childHeight = height
-                if (child.layoutParams.width != width || child.layoutParams.height != childHeight) {
-                    child.layoutParams = child.layoutParams.apply { this.width = width; this.height = childHeight }
+            if (filterActive) {
+                val visibility = if (rowPassesFilter(row)) android.view.View.VISIBLE else android.view.View.GONE
+                if (rowView.visibility != visibility) rowView.visibility = visibility
+            } else if (rowView.visibility != android.view.View.VISIBLE) {
+                rowView.visibility = android.view.View.VISIBLE
+            }
+            // Width checks are only needed when switching between sheets with different cached widths.
+            if (widthsChanged || wrappedRows.isNotEmpty() || rowHeightChanged) {
+                for (c in 0 until minOf(colLimit + 1, rowView.childCount)) {
+                    val child = rowView.getChildAt(c)
+                    val width = dp(if (c == 0) 48 else widths[c - 1])
+                    if (child.layoutParams.width != width || child.layoutParams.height != height) {
+                        child.layoutParams = child.layoutParams.apply { this.width = width; this.height = height }
+                    }
                 }
             }
         }
@@ -891,11 +916,13 @@ class MainActivity : Activity() {
                 if (key != null) {
                     val now = SystemClock.elapsedRealtime()
                     val isDoubleTap = lastTapAddress == key && now - lastTapAt <= 350L
+                    val keyboardAlreadyOpen = isSoftKeyboardVisible() || keepEditingOnNextCellTap
+                    keepEditingOnNextCellTap = false
                     select(key)
-                    if (isDoubleTap) {
+                    if (keyboardAlreadyOpen || editingAddress != null || isDoubleTap) {
                         lastTapAddress = null
                         lastTapAt = 0L
-                        startInlineEdit(this)
+                        startInlineEdit(cellViews[key] ?: this)
                     } else {
                         lastTapAddress = key
                         lastTapAt = now
@@ -1105,14 +1132,17 @@ class MainActivity : Activity() {
                 .showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT)
         }
         var finished = false
-        fun finish(save: Boolean) {
+        fun finish(save: Boolean, keepKeyboard: Boolean = false) {
             if (finished) return
             finished = true
             val newValue = editor.text.toString()
             if (save) putCell(address, newValue)
             editingAddress = null
-            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
-                .hideSoftInputFromWindow(editor.windowToken, 0)
+            keepEditingOnNextCellTap = keepKeyboard
+            if (!keepKeyboard) {
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                    .hideSoftInputFromWindow(editor.windowToken, 0)
+            }
 
             // Restore the original TextView before trying the fast in-place refresh.
             // Previously the editor replaced this view, but the fast path updated the
@@ -1122,9 +1152,16 @@ class MainActivity : Activity() {
                 parent.removeViewAt(editorIndex)
                 parent.addView(cell, editorIndex, params)
             }
-            cell.text = display(address)
-            val fastUpdated = save && refreshAfterCellEdit(address, newValue)
-            if (!fastUpdated) render()
+            if (save) {
+                // Keep ordinary data entry on the UI thread extremely short: commit the
+                // raw value, update just this cell, and recalculate dependent formulas off-thread.
+                // Do not rebuild the 1,300-cell grid for every keystroke/cell change.
+                cell.text = if (newValue.trimStart().startsWith("=")) "…" else newValue
+                formulaDisplayCache.clear()
+                scheduleFormulaRecalculation()
+            } else {
+                cell.text = display(address)
+            }
             select(address)
             status.text = if (save) "Updated $sheetName!$address" else "Edit cancelled"
         }
@@ -1147,8 +1184,69 @@ class MainActivity : Activity() {
                 true
             } else false
         }
-        editor.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) finish(true) }
+        editor.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) finish(true, keepKeyboard = true) }
     }
+    private fun isSoftKeyboardVisible(): Boolean {
+        val visible = android.graphics.Rect()
+        window.decorView.getWindowVisibleDisplayFrame(visible)
+        val totalHeight = window.decorView.rootView.height
+        return totalHeight - visible.bottom > dp(150)
+    }
+
+    /**
+     * Recalculate formulas away from the UI thread. Ordinary cell entry commits immediately;
+     * formulas update their displayed results when the worker finishes. Revision/job checks
+     * prevent stale calculations from overwriting newer edits or a newly selected workbook.
+     */
+    private fun scheduleFormulaRecalculation() {
+        val jobId = formulaRecalcJobId.incrementAndGet()
+        val revision = workbookRevision.get()
+        val activeSheet = sheetName
+        val allSheetsSnapshot = sheets.mapValues { (_, cells) -> cells.toMap() }
+        val stylesSnapshot = styles.mapValues { (_, map) -> map.toMap() }
+        val formulas = allSheetsSnapshot.flatMap { (name, cells) ->
+            cells.filterValues { it.trimStart().startsWith("=") }.map { (address, raw) -> Triple(name, address, raw) }
+        }
+        if (formulas.isEmpty()) return
+        try {
+            backgroundExecutor.execute {
+                val results = linkedMapOf<String, Pair<String, String>>()
+                formulas.forEach { (formulaSheet, address, raw) ->
+                    val st = stylesSnapshot[formulaSheet]?.get(address)
+                    val cacheKey = "$formulaSheet|$address|$raw|${st?.numberFormat ?: "General"}"
+                    val rendered = runCatching {
+                        val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, raw.drop(1))
+                        when {
+                            imported?.error == null && imported?.text != null -> imported.text
+                            imported?.error == null && imported?.number != null -> formatNumber(imported.number, st?.numberFormat ?: "General", imported.number.toString())
+                            else -> {
+                                val engine = FormulaEngine(allSheetsSnapshot[formulaSheet].orEmpty())
+                                val textResult = engine.evalText(raw.drop(1))
+                                textResult ?: engine.eval(raw.drop(1)).let { value ->
+                                    if (value.isNaN() || value.isInfinite()) "#NUM!" else formatNumber(value, st?.numberFormat ?: "General", value.toString())
+                                }
+                            }
+                        } ?: imported?.error ?: "#ERROR"
+                    }.getOrElse { "#ERROR" }
+                    results["$formulaSheet!$address"] = cacheKey to rendered
+                }
+                mainHandler.post {
+                    if (isFinishing || isDestroyed || jobId != formulaRecalcJobId.get() || revision != workbookRevision.get()) return@post
+                    results.forEach { (sheetAddress, result) ->
+                        val splitAt = sheetAddress.lastIndexOf('!')
+                        if (splitAt <= 0) return@forEach
+                        val formulaSheet = sheetAddress.substring(0, splitAt)
+                        val address = sheetAddress.substring(splitAt + 1)
+                        formulaDisplayCache[result.first] = result.second
+                        if (formulaSheet == sheetName) cellViews[address]?.text = result.second
+                    }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Never block typing if the bounded worker queue is full; a later edit can retry.
+        }
+    }
+
     private fun putCell(address:String,value:String) {
         workbookRevision.incrementAndGet()
         formulaDisplayCache.clear()
@@ -1988,6 +2086,7 @@ class MainActivity : Activity() {
         // Invalidate pending UI callbacks and stop background work when this Activity is gone.
         filterJobId.incrementAndGet()
         sortJobId.incrementAndGet()
+        formulaRecalcJobId.incrementAndGet()
         backgroundExecutor.shutdownNow()
         super.onDestroy()
     }
