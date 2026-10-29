@@ -16,8 +16,8 @@ android {
 
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
 
-        versionCode 16
-        versionName '1.6.0'
+        versionCode 17
+        versionName '1.6.1'
 
         // Chaquopy: supported CPU architectures
         ndk {

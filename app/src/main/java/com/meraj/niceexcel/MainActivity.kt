@@ -18,6 +18,8 @@ import android.view.Gravity
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import android.widget.FrameLayout
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
@@ -105,7 +107,11 @@ class MainActivity : Activity() {
     // Commits an active inline edit when the IME is dismissed or Android Back is pressed.
     private var activeInlineCommit: (() -> Unit)? = null
     private var activeInlineCommitForCellChange: (() -> Unit)? = null
+    // Monotonic edit-session token prevents delayed IME/focus callbacks from committing
+    // a newer cell after the user has already moved on.
+    private var inlineEditGeneration = 0L
     private var keyboardWasVisible = false
+    private var backInvokedCallback: OnBackInvokedCallback? = null
     private var selectedRangeCells: List<String> = emptyList()
     private var selectedRangeLabel: String? = null
     // Rows in this set wrap text into at most two lines; other rows stay single-line.
@@ -290,15 +296,35 @@ class MainActivity : Activity() {
         root.addView(status)
         setContentView(root)
         // Save inline edits when the keyboard is dismissed (including Android navigation Back).
-        // Delay the commit briefly so switching focus between cells does not look like a dismissal.
+        // Capture the current edit-session token: a delayed callback from an old editor must
+        // never commit a newer editor opened while the IME was animating closed/open.
         root.viewTreeObserver.addOnGlobalLayoutListener {
             val visibleNow = isSoftKeyboardVisible()
             if (keyboardWasVisible && !visibleNow) {
+                val closingGeneration = inlineEditGeneration
                 mainHandler.postDelayed({
-                    if (!isSoftKeyboardVisible()) activeInlineCommit?.invoke()
+                    if (!isFinishing && !isDestroyed && !isSoftKeyboardVisible() &&
+                        closingGeneration == inlineEditGeneration) {
+                        activeInlineCommit?.invoke()
+                    }
                 }, 220L)
             }
             keyboardWasVisible = visibleNow
+        }
+        // Android 13+ uses the predictive/system back dispatcher. Handle it explicitly so
+        // Back commits/closes an active cell editor rather than leaving a stale editor alive.
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            backInvokedCallback = OnBackInvokedCallback {
+                if (editingAddress != null) {
+                    activeInlineCommit?.invoke()
+                } else {
+                    finish()
+                }
+            }
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                backInvokedCallback!!
+            )
         }
         render()
     }
@@ -1158,31 +1184,28 @@ class MainActivity : Activity() {
                     val keyboardAlreadyOpen = isSoftKeyboardVisible() || keepEditingOnNextCellTap
                     keepEditingOnNextCellTap = false
                     val previousEditorAddress = editingAddress
-                    // Record the destination synchronously. The current editor may lose focus
-                    // before the posted callback runs, so setting this later can miss the
-                    // hand-off and leave the next cell selected without an editing cursor.
-                    if (keyboardAlreadyOpen && previousEditorAddress != null && previousEditorAddress != key) {
-                        pendingEditAddress = key
+
+                    // Route taps during an active edit through one hand-off path.
+                    // Do not enqueue a separate startInlineEdit callback for every tap:
+                    // rapid taps can race and leave stale editors or IME requests alive.
+                    if (previousEditorAddress != null) {
+                        if (previousEditorAddress != key) {
+                            pendingEditAddress = key
+                            lastTapAddress = null
+                            lastTapAt = 0L
+                            select(key)
+                            activeInlineCommitForCellChange?.invoke()
+                        }
+                        return@setOnClickListener
                     }
+
                     select(key)
-                    if (keyboardAlreadyOpen || previousEditorAddress != null || isDoubleTap) {
+                    if (keyboardAlreadyOpen || isDoubleTap) {
                         lastTapAddress = null
                         lastTapAt = 0L
-                        // If the existing EditText still owns the editing session, commit it
-                        // while keeping the IME open. finish() will launch the queued target
-                        // only after the old cell has been restored and refreshed.
-                        cellViews[key]?.post {
-                            when {
-                                editingAddress == key -> Unit
-                                editingAddress == null -> {
-                                    val target = cellViews[key] ?: this
-                                    select(key)
-                                    startInlineEdit(target)
-                                }
-                                pendingEditAddress == key -> activeInlineCommitForCellChange?.invoke()
-                                else -> pendingEditAddress = key
-                            }
-                        }
+                        // Open only the most recently tapped cell. A previously queued
+                        // hand-off checks editingAddress before opening its target.
+                        startInlineEdit(this)
                     } else {
                         lastTapAddress = key
                         lastTapAt = now
@@ -1422,17 +1445,25 @@ class MainActivity : Activity() {
             override fun afterTextChanged(s: android.text.Editable?) {}
         })
         editingAddress = address
+        val editGeneration = ++inlineEditGeneration
         parent.removeViewAt(index)
         parent.addView(editor, index, params)
         editor.requestFocus()
         editor.post {
-            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
-                .showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT)
+            // Rapid cell switching can finish/remove this editor before the post runs.
+            // Do not reopen the IME for a stale editor, even if a cell address is reused.
+            if (editGeneration == inlineEditGeneration && editingAddress == address &&
+                editor.parent === parent && editor.isAttachedToWindow && !isFinishing && !isDestroyed) {
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                    .showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT)
+            }
         }
         var finished = false
         fun finish(save: Boolean, keepKeyboard: Boolean = false) {
-            if (finished) return
+            if (finished || editGeneration != inlineEditGeneration) return
             finished = true
+            // Invalidate any queued callbacks before changing focus or touching the IME.
+            inlineEditGeneration++
             val newValue = editor.text.toString()
             if (save) {
                 putCell(address, newValue)
@@ -1522,7 +1553,13 @@ class MainActivity : Activity() {
                 true
             } else false
         }
-        editor.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) finish(true, keepKeyboard = true) }
+        editor.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus && editGeneration == inlineEditGeneration) {
+                // Focus changes can be emitted during cell hand-off. The session guard ensures
+                // this callback cannot finish an editor that has already been replaced.
+                finish(true, keepKeyboard = true)
+            }
+        }
     }
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
@@ -2578,6 +2615,13 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         // Invalidate pending UI callbacks and stop background work when this Activity is gone.
+        inlineEditGeneration++
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            backInvokedCallback?.let { callback ->
+                onBackInvokedDispatcher.unregisterOnBackInvokedCallback(callback)
+            }
+        }
+        backInvokedCallback = null
         filterJobId.incrementAndGet()
         sortJobId.incrementAndGet()
         formulaRecalcJobId.incrementAndGet()
