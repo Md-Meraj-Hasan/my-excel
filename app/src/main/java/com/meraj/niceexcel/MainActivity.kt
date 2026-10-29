@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -299,6 +300,111 @@ class MainActivity : Activity() {
         render()
     }
 
+    /**
+     * Shared visual styling for native dialogs. Only presentation changes here:
+     * titles, surfaces, input fields and action buttons; dialog actions remain untouched.
+     */
+    private fun AlertDialog.Builder.showProfessional(): AlertDialog {
+        val dialog = create()
+        dialog.setOnShowListener {
+            val deepGreen = Color.rgb(21, 93, 66)
+            val paleGreen = Color.rgb(227, 244, 234)
+            val ink = Color.rgb(31, 45, 38)
+            dialog.window?.setBackgroundDrawable(
+                GradientDrawable().apply {
+                    setColor(Color.rgb(250, 252, 250))
+                    cornerRadius = dp(18).toFloat()
+                    setStroke(dp(1), Color.rgb(210, 225, 216))
+                }
+            )
+            dialog.window?.decorView?.setPadding(dp(2), dp(2), dp(2), dp(2))
+
+            val titleView = dialog.findViewById<TextView>(androidxResourceId("alertTitle"))
+                ?: dialog.findViewById(android.R.id.title)
+            titleView?.apply {
+                setTextColor(deepGreen)
+                textSize = 19f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setPadding(dp(22), dp(18), dp(22), dp(8))
+            }
+            val messageView = dialog.findViewById<TextView>(android.R.id.message)
+            messageView?.apply {
+                setTextColor(ink)
+                textSize = 14f
+                setLineSpacing(dp(2).toFloat(), 1.05f)
+            }
+
+            val positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            val negative = dialog.getButton(AlertDialog.BUTTON_NEGATIVE)
+            val neutral = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+            listOf(positive, negative, neutral).forEach { button ->
+                button?.apply {
+                    textSize = 13f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    isAllCaps = false
+                    setPadding(dp(12), dp(8), dp(12), dp(8))
+                    if (this === positive) {
+                        setTextColor(Color.WHITE)
+                        background = GradientDrawable().apply {
+                            setColor(deepGreen)
+                            cornerRadius = dp(10).toFloat()
+                        }
+                    } else {
+                        setTextColor(deepGreen)
+                        background = GradientDrawable().apply {
+                            setColor(paleGreen)
+                            cornerRadius = dp(10).toFloat()
+                            setStroke(dp(1), Color.rgb(190, 220, 202))
+                        }
+                    }
+                }
+            }
+            styleDialogInputs(dialog.window?.decorView, ink, deepGreen)
+            styleDialogList(dialog.window?.decorView, ink, deepGreen, paleGreen)
+        }
+        dialog.show()
+        return dialog
+    }
+
+    private fun androidxResourceId(name: String): Int =
+        resources.getIdentifier(name, "id", "android")
+
+    private fun styleDialogInputs(view: android.view.View?, textColor: Int, accent: Int) {
+        when (view) {
+            is EditText -> view.apply {
+                setTextColor(textColor)
+                setHintTextColor(Color.rgb(126, 143, 133))
+                textSize = 14f
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                background = GradientDrawable().apply {
+                    setColor(Color.WHITE)
+                    cornerRadius = dp(9).toFloat()
+                    setStroke(dp(1), Color.rgb(198, 216, 204))
+                }
+            }
+            is android.view.ViewGroup -> {
+                for (i in 0 until view.childCount) styleDialogInputs(view.getChildAt(i), textColor, accent)
+            }
+        }
+    }
+
+    private fun styleDialogList(view: android.view.View?, textColor: Int, accent: Int, selectedFill: Int) {
+        when (view) {
+            is ListView -> view.apply {
+                divider = ColorDrawable(Color.rgb(226, 235, 229))
+                dividerHeight = dp(1)
+                selector = GradientDrawable().apply {
+                    setColor(selectedFill)
+                    cornerRadius = dp(6).toFloat()
+                }
+                setPadding(dp(6), dp(4), dp(6), dp(4))
+            }
+            is android.view.ViewGroup -> {
+                for (i in 0 until view.childCount) styleDialogList(view.getChildAt(i), textColor, accent, selectedFill)
+            }
+        }
+    }
+
     private fun roundedToolbarBackground(fillColor: Int, strokeColor: Int, radiusDp: Int): GradientDrawable {
         return GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
@@ -415,7 +521,7 @@ class MainActivity : Activity() {
                 putCell(selected, "")
                 render(); formula.setText("")
                 status.text = "Cleared $sheetName!$selected"
-            }.show()
+            }.showProfessional()
     }
 
     /** Safely paste tab/newline-separated clipboard text into a rectangular range. */
@@ -457,7 +563,7 @@ class MainActivity : Activity() {
             if (startCol < 0 || startCol + maxCols > colLimit) {
                 AlertDialog.Builder(this)
                     .setMessage("Pasted data exceeds the ${colLimit}-column grid. Select an earlier starting column.")
-                    .setPositiveButton("OK", null).show()
+                    .setPositiveButton("OK", null).showProfessional()
                 return
             }
             if (startRow < 1 || startRow + rows.size - 1 > 10000) {
@@ -503,7 +609,7 @@ class MainActivity : Activity() {
                 status.text = if (which == 1) "Row $row set to double-line text" else "Row $row set to single-line text"
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .showProfessional()
     }
 
     private fun newWorkbook() {
@@ -524,7 +630,7 @@ class MainActivity : Activity() {
                 selectedRangeCells = emptyList(); selectedRangeLabel = null
                 render(); cellName.text = selected; formula.setText("")
                 status.text = "New blank workbook"
-            }.show()
+            }.showProfessional()
     }
 
     private fun tool(label:String, action:()->Unit)=TextView(this).apply {
@@ -1171,7 +1277,7 @@ class MainActivity : Activity() {
                 formula.setText(data[selected].orEmpty())
                 status.text = "Cleared row $row"
             }
-            .show()
+            .showProfessional()
     }
 
     private fun applyCellBackground(view: TextView, address: String?, header: Boolean) {
@@ -1590,7 +1696,7 @@ class MainActivity : Activity() {
                 render()
                 scheduleFormulaRecalculation()
                 status.text = "AI Auto Fill completed: $filled cell(s) filled in $targetLabel"
-            }.show()
+            }.showProfessional()
     }
 
     private fun cellPosition(address: String): Pair<Int, Int>? {
@@ -1634,7 +1740,7 @@ class MainActivity : Activity() {
                 formula.setSelection(formula.text.length)
                 formula.requestFocus()
                 status.text = "Formula inserted: ${formulas[which]}"
-            }.show()
+            }.showProfessional()
     }
     private fun applyFormula() {
         putCell(selected,formula.text.toString()); render(); status.text="Updated $sheetName!$selected"
@@ -1679,7 +1785,7 @@ class MainActivity : Activity() {
                 val match=data.entries.firstOrNull { (a,v) -> a>selected && v.contains(q,true) }
                     ?: data.entries.firstOrNull { (_,v) -> v.contains(q,true) }
                 if(match!=null) { select(match.key); status.text="Found ${match.key}" } else status.text="No match found"
-            }.setNegativeButton("Cancel",null).show()
+            }.setNegativeButton("Cancel",null).showProfessional()
     }
     private fun addSheet() {
         val started = SystemClock.elapsedRealtime()
@@ -1712,7 +1818,7 @@ class MainActivity : Activity() {
                 }
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .showProfessional()
     }
 
     private fun deleteCurrentSheet() {
@@ -1744,7 +1850,7 @@ class MainActivity : Activity() {
                 status.text = "Deleted sheet: $deleting"
                 Log.d("NiceExcelPerf", "deleteSheet totalMs=${SystemClock.elapsedRealtime() - started} fastPath=$fast")
             }
-            .show()
+            .showProfessional()
     }
 
     private fun renameSheet(old:String) {
@@ -1760,12 +1866,12 @@ class MainActivity : Activity() {
                     if (oldMerges != null) mergedRangesBySheet[name] = oldMerges
                     sheets.clear(); sheets.putAll(rebuilt); if(sheetName==old) sheetName=name; renderTabs()
                 }
-            }.setNegativeButton("Cancel",null).show()
+            }.setNegativeButton("Cancel",null).showProfessional()
     }
     private fun formulaHelp() {
         AlertDialog.Builder(this).setTitle("Formula examples")
             .setMessage("Arithmetic: =A1+B1, =B2*C2\nRanges: =SUM(A1:A10)\nFunctions: SUM, AVERAGE, MIN, MAX, COUNT, COUNTA, COUNTIF, COUNTBLANK, SUMIF, IF, AND, OR, PRODUCT, ABS, SQRT, INT, ROUND, ROUNDUP, ROUNDDOWN, MOD, POWER, CEILING, FLOOR")
-            .setPositiveButton("OK",null).show()
+            .setPositiveButton("OK",null).showProfessional()
     }
     private fun rangeToolsMenu() {
         val input = EditText(this).apply {
@@ -1798,7 +1904,7 @@ class MainActivity : Activity() {
                 }
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .showProfessional()
     }
 
     private fun mergeCellsDialog(vertical: Boolean) {
@@ -1869,7 +1975,7 @@ class MainActivity : Activity() {
                 formula.setText(data[selected].orEmpty())
                 render()
                 status.text = "Merged $targetRange"
-            }.show()
+            }.showProfessional()
     }
 
     private fun unmergeCellsDialog() {
@@ -1904,7 +2010,7 @@ class MainActivity : Activity() {
                 } else {
                     Toast.makeText(this, "Exact merged range not found", Toast.LENGTH_LONG).show()
                 }
-            }.show()
+            }.showProfessional()
     }
 
     private fun applyMergedCellPresentation() {
@@ -2037,7 +2143,7 @@ class MainActivity : Activity() {
                             val gravity = when (index) { 1 -> Gravity.CENTER; 2 -> Gravity.CENTER_VERTICAL or Gravity.END; else -> Gravity.CENTER_VERTICAL or Gravity.START }
                             cells.forEach { pendingStyles.getValue(it).alignment = gravity }
                             continueEditing("Alignment selected")
-                        }.setNegativeButton("Cancel", null).show()
+                        }.setNegativeButton("Cancel", null).showProfessional()
                     }
                     3 -> { cells.forEach { val st = pendingStyles.getValue(it); st.bold = !st.bold }; continueEditing("Bold toggled") }
                     4 -> { cells.forEach { val st = pendingStyles.getValue(it); st.italic = !st.italic }; continueEditing("Italic toggled") }
@@ -2058,14 +2164,14 @@ class MainActivity : Activity() {
                                     Toast.makeText(this, "Enter a font size from 8 to 32", Toast.LENGTH_SHORT).show()
                                     showRangeActions(rangeLabel, cells, pendingStyles)
                                 }
-                            }.setNegativeButton("Cancel") { _, _ -> showRangeActions(rangeLabel, cells, pendingStyles) }.show()
+                            }.setNegativeButton("Cancel") { _, _ -> showRangeActions(rangeLabel, cells, pendingStyles) }.showProfessional()
                     }
                     7 -> {
                         val opts = arrayOf("General", "Number (2 decimals)", "Percentage", "Currency", "Date (text display)")
                         AlertDialog.Builder(this).setTitle("Number format for $rangeLabel").setItems(opts) { _, index ->
                             cells.forEach { pendingStyles.getValue(it).numberFormat = opts[index] }
                             continueEditing("Number format selected")
-                        }.setNegativeButton("Cancel") { _, _ -> showRangeActions(rangeLabel, cells, pendingStyles) }.show()
+                        }.setNegativeButton("Cancel") { _, _ -> showRangeActions(rangeLabel, cells, pendingStyles) }.showProfessional()
                     }
                     8 -> { cells.forEach { val st = pendingStyles.getValue(it); st.border = !st.border }; continueEditing("Borders toggled") }
                     9 -> { cells.forEach { pendingStyles[it] = CellStyle() }; continueEditing("Clear formatting selected") }
@@ -2090,7 +2196,7 @@ class MainActivity : Activity() {
                 Toast.makeText(this, "Formatting applied to $rangeLabel", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .showProfessional()
     }
 
     private fun formattingMenu() {
@@ -2117,7 +2223,7 @@ class MainActivity : Activity() {
                 10 -> { if (rangeCells.isNotEmpty()) { targets.forEach { data.remove(it) }; formulaDisplayCache.clear(); formula.setText(""); refresh("Contents cleared") } else { putCell(selected, ""); formula.setText(""); render(); status.text = "Cell cleared: $selected" } }
                 11 -> findReplaceMenu()
             }
-        }.show()
+        }.showProfessional()
     }
 
     private fun chooseAlignmentForTargets(targets: List<String>, label: String) {
@@ -2126,7 +2232,7 @@ class MainActivity : Activity() {
             val alignment = when (index) { 1 -> Gravity.CENTER; 2 -> Gravity.CENTER_VERTICAL or Gravity.END; else -> Gravity.CENTER_VERTICAL or Gravity.START }
             targets.forEach { styleFor(it).alignment = alignment }
             refreshStyledCells(targets); status.text = "Alignment applied to $label"
-        }.show()
+        }.showProfessional()
     }
 
     private fun chooseRangeFontSize(label: String, targets: List<String>) {
@@ -2147,7 +2253,7 @@ class MainActivity : Activity() {
                     status.text = "Font size applied to $label"
                 }
             }
-            .setNegativeButton("Cancel", null).show()
+            .setNegativeButton("Cancel", null).showProfessional()
     }
 
     private fun chooseRangeNumberFormat(label: String, targets: List<String>) {
@@ -2156,20 +2262,20 @@ class MainActivity : Activity() {
             targets.forEach { styleFor(it).numberFormat = opts[index] }
             refreshStyledCells(targets)
             status.text = "Number format applied to $label: ${opts[index]}"
-        }.setNegativeButton("Cancel", null).show()
+        }.setNegativeButton("Cancel", null).showProfessional()
     }
 
     private fun chooseFontSize() {
         val input = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(styleFor(selected).fontSize.toInt().toString()); hint = "8–32" }
         AlertDialog.Builder(this).setTitle("Font size").setView(input)
             .setPositiveButton("Apply") { _, _ -> input.text.toString().toFloatOrNull()?.let { styleFor(selected).fontSize = it.coerceIn(8f, 32f) }; refreshStyledCells(listOf(selected)) }
-            .setNegativeButton("Cancel", null).show()
+            .setNegativeButton("Cancel", null).showProfessional()
     }
 
     private fun chooseColor(title: String, apply: (Int) -> Unit) {
         val names = arrayOf("Black", "White", "Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray", "Light blue")
         val colors = intArrayOf(Color.BLACK, Color.WHITE, Color.RED, 0xFFFF9800.toInt(), Color.YELLOW, 0xFF2E7D32.toInt(), Color.BLUE, 0xFF7B1FA2.toInt(), Color.GRAY, 0xFFBBDEFB.toInt())
-        AlertDialog.Builder(this).setTitle(title).setItems(names) { _, which -> apply(colors[which]); status.text = "$title applied" }.show()
+        AlertDialog.Builder(this).setTitle(title).setItems(names) { _, which -> apply(colors[which]); status.text = "$title applied" }.showProfessional()
     }
 
     private fun chooseAlignment() {
@@ -2191,8 +2297,8 @@ class MainActivity : Activity() {
                     }
                     refreshStyledCells(targets)
                     status.text = if (scope == 0) "Alignment applied to $selected" else "Alignment applied to column ${Regex("^([A-Z]+)").find(selected)?.groupValues?.get(1) ?: "A"}"
-                }.show()
-        }.show()
+                }.showProfessional()
+        }.showProfessional()
     }
 
     private fun chooseNumberFormat() {
@@ -2200,7 +2306,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("Number format").setItems(opts) { _, i ->
             styleFor(selected).numberFormat = opts[i]
             refreshStyledCells(listOf(selected)); status.text = "Number format set: ${opts[i]}"
-        }.show()
+        }.showProfessional()
     }
 
     private fun tableMenu() {
@@ -2268,7 +2374,7 @@ class MainActivity : Activity() {
                 }
             }
             refreshStyledCells(affected)
-        }.show()
+        }.showProfessional()
     }
 
     /** Returns the last used row and column (zero-based column), including formula cells. */
@@ -2352,7 +2458,7 @@ class MainActivity : Activity() {
                 refreshFilterVisibility()
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .showProfessional()
     }
 
     private fun sortColumn() {
@@ -2514,7 +2620,7 @@ class MainActivity : Activity() {
                     putExtra(Intent.EXTRA_MIME_TYPES, if (which == 0) arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/octet-stream", "application/zip") else arrayOf("text/csv", "text/plain", "application/octet-stream"))
                 }
                 startActivityForResult(i, if (which == 0) 14 else 12)
-            }.setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Cancel", null).showProfessional()
     }
     private fun saveMenu() {
         AlertDialog.Builder(this).setTitle("Save workbook")
@@ -2526,7 +2632,7 @@ class MainActivity : Activity() {
                     putExtra(Intent.EXTRA_TITLE, if (xlsx) "NiceExcel.xlsx" else "$sheetName.csv")
                 }
                 startActivityForResult(i, if (xlsx) 13 else 11)
-            }.setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Cancel", null).showProfessional()
     }
     private fun saveCsv() {
         pendingCsv=(1..rowCount).joinToString("\n") { r ->
