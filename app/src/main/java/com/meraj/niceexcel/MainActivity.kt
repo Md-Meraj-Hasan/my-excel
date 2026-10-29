@@ -92,6 +92,9 @@ class MainActivity : Activity() {
     private var lastColumnWidths: List<Int> = List(26) { 39 }
     // Widths are cached per sheet so switching sheets does not rescan every workbook cell.
     private val columnWidthsBySheet = mutableMapOf<String, List<Int>>()
+    // Build row line counts in one pass and reuse them during grid layout. Null means invalidated.
+    private var cachedExplicitLineCountsByRow: Map<Int, Int>? = null
+    private val cellAddressRowPattern = Regex("^[A-Z]+(\\d+)$")
     private var lastTapAddress: String? = null
     private var lastTapAt = 0L
     private var editingAddress: String? = null
@@ -772,9 +775,8 @@ class MainActivity : Activity() {
     private fun refreshVisibleCells() {
         val perfStarted = SystemClock.elapsedRealtime()
         val longestByColumn = IntArray(colLimit) { c -> colName(c).length }
-        val addressPattern = Regex("^([A-Z]+)(\\d+)$")
         data.keys.forEach { address ->
-            val match = addressPattern.matchEntire(address) ?: return@forEach
+            val match = cellAddressRowPattern.matchEntire(address) ?: return@forEach
             val column = columnIndex(match.groupValues[1])
             val row = match.groupValues[2].toIntOrNull() ?: return@forEach
             if (column in 0 until colLimit && row !in wrappedRows) {
@@ -953,6 +955,7 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
+        cachedExplicitLineCountsByRow = null
         val perfStarted = SystemClock.elapsedRealtime()
         // Treat a full/in-place render as a workbook-state boundary. Any background
         // snapshot started before this boundary must revalidate before committing.
@@ -1085,11 +1088,24 @@ class MainActivity : Activity() {
 
     /** Row height follows explicit newlines in cell values, while preserving the existing
      * two-line row mode. Cap at six visible lines to keep the grid usable on mobile. */
+    /**
+     * Counts explicit newlines by row with one workbook scan, then serves repeated layout
+     * queries in O(1). The cache is invalidated by render() and putCell().
+     */
     private fun rowLineCount(row: Int): Int {
-        val explicitLines = data.entries.asSequence()
-            .filter { Regex("^[A-Z]+(\\d+)$").matchEntire(it.key)?.groupValues?.get(1)?.toIntOrNull() == row }
-            .map { it.value.count { ch -> ch == '\n' } + 1 }
-            .maxOrNull() ?: 1
+        var lineCounts = cachedExplicitLineCountsByRow
+        if (lineCounts == null) {
+            val counts = HashMap<Int, Int>()
+            data.forEach { (address, value) ->
+                val match = cellAddressRowPattern.matchEntire(address) ?: return@forEach
+                val cellRow = match.groupValues[1].toIntOrNull() ?: return@forEach
+                val lines = value.count { ch -> ch == '\\n' } + 1
+                if (lines > (counts[cellRow] ?: 1)) counts[cellRow] = lines
+            }
+            lineCounts = counts
+            cachedExplicitLineCountsByRow = lineCounts
+        }
+        val explicitLines = lineCounts[row] ?: 1
         return max(if (row in wrappedRows) 2 else 1, explicitLines).coerceIn(1, 6)
     }
 
@@ -1585,6 +1601,7 @@ class MainActivity : Activity() {
     }
 
     private fun putCell(address:String,value:String) {
+        cachedExplicitLineCountsByRow = null
         workbookRevision.incrementAndGet()
         formulaDisplayCache.clear()
         undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
