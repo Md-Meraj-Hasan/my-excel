@@ -494,7 +494,7 @@ class MainActivity : Activity() {
         var needsFullLayout = false
         addresses.forEach { address ->
             val view = cellViews[address] ?: return@forEach
-            val text = display(address)
+            val text = gridDisplay(address)
             val match = Regex("^([A-Z]+)(\\d+)$").matchEntire(address)
             val col = match?.groupValues?.get(1)?.let { columnIndex(it) } ?: -1
             if (col in lastColumnWidths.indices && text.length * 7 + 18 > lastColumnWidths[col]) {
@@ -622,7 +622,7 @@ class MainActivity : Activity() {
             }
         }
         cellViews.forEach { (address, view) ->
-            view.text = display(address)
+            view.text = gridDisplay(address)
             val st = sheetStyles[address]
             view.setTextColor(st?.textColor ?: Color.rgb(24, 32, 39))
             view.textSize = st?.fontSize ?: 13f
@@ -702,7 +702,7 @@ class MainActivity : Activity() {
             }
             val match = addressPattern!!.matchEntire(address)
             val row = match?.groupValues?.get(1)?.toIntOrNull() ?: continue
-            val text = display(address)
+            val text = gridDisplay(address)
             if (view.text.toString() != text) view.text = text
             val st = sheetStyles[address]
             val textColor = st?.textColor ?: Color.rgb(24, 32, 39)
@@ -848,7 +848,7 @@ class MainActivity : Activity() {
         line.addView(rowHeader)
         for (c in 0 until colLimit) {
             val address = "${colName(c)}$row"
-            line.addView(makeCell(display(address), columnWidths[c], false, address, rowHeight))
+            line.addView(makeCell(gridDisplay(address), columnWidths[c], false, address, rowHeight))
         }
         return line
     }
@@ -856,7 +856,7 @@ class MainActivity : Activity() {
     private fun refreshAfterCellEdit(address: String, value: String): Boolean {
         // Keep the existing grid and keyboard responsive for ordinary edits. Only rebuild
         // the 1,300-view grid when a value needs more width than the current column provides.
-        val editedText = display(address)
+        val editedText = gridDisplay(address)
         val match = Regex("^([A-Z]+)(\\d+)$").matchEntire(address) ?: return false
         val col = columnIndex(match.groupValues[1])
         val currentWidth = lastColumnWidths.getOrNull(col) ?: return false
@@ -887,6 +887,22 @@ class MainActivity : Activity() {
             .maxOrNull() ?: name.length
         // Three-character default; auto-expand by one character-space per extra character.
         return max(28, minOf(360, longest * 7 + 18))
+    }
+
+    /**
+     * Display value used only inside the grid. In double-line mode, split at the first
+     * whitespace so a row explicitly set to wrap actually displays two lines even when
+     * another cell in the same column has caused that column to auto-expand.
+     */
+    private fun gridDisplay(address: String): String {
+        val raw = display(address)
+        val row = Regex("^[A-Z]+(\\d+)$").matchEntire(address)
+            ?.groupValues?.get(1)?.toIntOrNull()
+        if (row == null || row !in wrappedRows) return raw
+        val splitAt = raw.indexOfFirst { it.isWhitespace() }
+        return if (splitAt > 0 && splitAt < raw.lastIndex) {
+            raw.substring(0, splitAt) + "\n" + raw.substring(splitAt + 1).trimStart()
+        } else raw
     }
 
     private fun makeCell(value:String,width:Int,header:Boolean,key:String?,cellHeight:Int = 24):TextView {
@@ -1154,14 +1170,14 @@ class MainActivity : Activity() {
                 parent.addView(cell, editorIndex, params)
             }
             if (save) {
-                // Keep ordinary data entry on the UI thread extremely short: commit the
-                // raw value, update just this cell, and recalculate dependent formulas off-thread.
-                // Do not rebuild the 1,300-cell grid for every keystroke/cell change.
-                cell.text = if (newValue.trimStart().startsWith("=")) "…" else newValue
+                // Recompute automatic column widths and wrapped-row display after each
+                // committed edit. This updates existing views in place, avoiding a full
+                // 1,300-cell rebuild while preventing newly entered text from being clipped.
                 formulaDisplayCache.clear()
+                refreshVisibleCells()
                 scheduleFormulaRecalculation()
             } else {
-                cell.text = display(address)
+                cell.text = gridDisplay(address)
             }
             select(address)
             status.text = if (save) "Updated $sheetName!$address" else "Edit cancelled"
@@ -1188,10 +1204,16 @@ class MainActivity : Activity() {
         editor.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) finish(true, keepKeyboard = true) }
     }
     private fun isSoftKeyboardVisible(): Boolean {
+        // getWindowVisibleDisplayFrame can be unreliable with edge-to-edge layouts on
+        // recent Android versions. Prefer the IME inset API where available.
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val insets = window.decorView.rootWindowInsets
+            if (insets != null && insets.isVisible(android.view.WindowInsets.Type.ime())) return true
+        }
         val visible = android.graphics.Rect()
         window.decorView.getWindowVisibleDisplayFrame(visible)
         val totalHeight = window.decorView.rootView.height
-        return totalHeight - visible.bottom > dp(150)
+        return totalHeight - visible.bottom > dp(120)
     }
 
     /**
