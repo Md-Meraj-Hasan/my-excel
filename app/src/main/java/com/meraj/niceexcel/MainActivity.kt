@@ -1099,7 +1099,7 @@ class MainActivity : Activity() {
             data.forEach { (address, value) ->
                 val match = cellAddressRowPattern.matchEntire(address) ?: return@forEach
                 val cellRow = match.groupValues[1].toIntOrNull() ?: return@forEach
-                val lines = value.count { ch -> ch == '\\n' } + 1
+                val lines = value.count { ch -> ch == '\n' } + 1
                 if (lines > (counts[cellRow] ?: 1)) counts[cellRow] = lines
             }
             lineCounts = counts
