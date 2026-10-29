@@ -591,6 +591,49 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Fast post-edit refresh for a single column. Full-sheet refresh scans every stored cell
+     * and rewrites all visible layouts; doing that on every edit can make newly typed text
+     * appear late on slower phones. Keep auto-width behavior, but scope the work to the edited
+     * column and update formulas separately on the background executor.
+     */
+    private fun refreshEditedCellColumn(address: String) {
+        val match = Regex("^([A-Z]+)(\\d+)$").matchEntire(address) ?: return
+        val columnName = match.groupValues[1]
+        val column = columnIndex(columnName)
+        if (column !in 0 until colLimit) return
+
+        var longest = columnName.length
+        val addresses = ArrayList<Pair<String, Int>>()
+        data.keys.forEach { candidate ->
+            val m = Regex("^([A-Z]+)(\\d+)$").matchEntire(candidate) ?: return@forEach
+            if (columnIndex(m.groupValues[1]) != column) return@forEach
+            val row = m.groupValues[2].toIntOrNull() ?: return@forEach
+            addresses.add(candidate to row)
+            if (row !in wrappedRows) longest = max(longest, display(candidate).length)
+        }
+        val widthPx = dp(max(28, minOf(360, longest * 7 + 18)))
+        if (columnHeader.childCount > column + 1) {
+            val header = columnHeader.getChildAt(column + 1)
+            header.layoutParams = (header.layoutParams ?: LinearLayout.LayoutParams(widthPx, dp(24))).apply { width = widthPx }
+        }
+        if (frozenFirstRow.childCount > column + 1) {
+            val frozen = frozenFirstRow.getChildAt(column + 1)
+            frozen.layoutParams = (frozen.layoutParams ?: LinearLayout.LayoutParams(widthPx, dp(24))).apply { width = widthPx }
+        }
+        addresses.forEach { (cellAddress, row) ->
+            val view = cellViews[cellAddress] ?: return@forEach
+            view.layoutParams = (view.layoutParams ?: LinearLayout.LayoutParams(widthPx, dp(rowHeightPx(row)))).apply { width = widthPx }
+            view.text = gridDisplay(cellAddress)
+            view.maxLines = rowLineCount(row)
+            view.ellipsize = if (view.maxLines == 2) null else android.text.TextUtils.TruncateAt.END
+            applyCellBackground(view, cellAddress, false)
+        }
+        lastColumnWidths = lastColumnWidths.toMutableList().also { if (column < it.size) it[column] = max(28, minOf(360, longest * 7 + 18)) }
+        columnWidthsBySheet[sheetName] = lastColumnWidths
+        applyMergedCellPresentation()
+    }
+
     /** Refresh existing cells in place, including widths, instead of rebuilding 1,300 TextViews. */
     private fun refreshVisibleCells() {
         val perfStarted = SystemClock.elapsedRealtime()
@@ -1277,7 +1320,7 @@ class MainActivity : Activity() {
                     // every populated cell before the next cursor appears.
                     cell.text = gridDisplay(address)
                 } else {
-                    refreshVisibleCells()
+                    refreshEditedCellColumn(address)
                     scheduleFormulaRecalculation()
                 }
             } else {
@@ -1296,12 +1339,12 @@ class MainActivity : Activity() {
                         // the destination editor has been created and requested focus.
                         mainHandler.post {
                             formulaDisplayCache.clear()
-                            refreshVisibleCells()
+                            refreshEditedCellColumn(address)
                             scheduleFormulaRecalculation()
                         }
                     } else {
-                        // If the target view disappeared, retain the normal refresh path.
-                        refreshVisibleCells()
+                        // If the target view disappeared, refresh only the edited column.
+                        refreshEditedCellColumn(address)
                         scheduleFormulaRecalculation()
                     }
                 }
