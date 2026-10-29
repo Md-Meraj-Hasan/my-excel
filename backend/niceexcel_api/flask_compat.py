@@ -6,7 +6,7 @@ request models while replacing the FastAPI/Uvicorn runtime with Flask's WSGI ser
 from __future__ import annotations
 import asyncio
 import inspect
-from typing import get_type_hints
+from typing import get_type_hints, get_origin
 from pathlib import Path
 from flask import Flask, request as flask_request, jsonify, send_file, send_from_directory, Response
 
@@ -70,8 +70,16 @@ class _FlaskApp(Flask):
                             if body_cache is None:
                                 body_cache = flask_request.get_json(silent=True) or {}
                             model = hints.get(name, param.annotation)
-                            try: args[name] = model.parse_obj(body_cache)
-                            except Exception as exc: raise HTTPException(422, f"Invalid request body: {exc}") from exc
+                            # Plain dictionary payloads (for example history-batch's
+                            # {"actions": ["undo", "redo"]}) are already decoded JSON.
+                            # They must not be sent through Pydantic's parse_obj().
+                            if model is dict or get_origin(model) is dict:
+                                args[name] = body_cache
+                            else:
+                                try:
+                                    args[name] = model.parse_obj(body_cache)
+                                except Exception as exc:
+                                    raise HTTPException(422, f"Invalid request body: {exc}") from exc
                         elif name in flask_request.args:
                             args[name] = flask_request.args.get(name)
                         elif default is not inspect.Parameter.empty:
