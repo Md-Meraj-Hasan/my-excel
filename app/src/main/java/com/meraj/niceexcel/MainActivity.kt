@@ -1263,30 +1263,46 @@ class MainActivity : Activity() {
                 parent.removeViewAt(editorIndex)
                 parent.addView(cell, editorIndex, params)
             }
+            // If the user tapped another cell while the keyboard is open, prioritize
+            // handing focus to that cell. Full width scanning and formula refresh can be
+            // comparatively expensive, so do them only after the next editor has opened.
+            val nextAddress = pendingEditAddress
+            pendingEditAddress = null
+            val handoffToNextCell = keepKeyboard && nextAddress != null && nextAddress != address
+
             if (save) {
-                // Recompute automatic column widths and wrapped-row display after each
-                // committed edit. This updates existing views in place, avoiding a full
-                // 1,300-cell rebuild while preventing newly entered text from being clipped.
                 formulaDisplayCache.clear()
-                refreshVisibleCells()
-                scheduleFormulaRecalculation()
+                if (handoffToNextCell) {
+                    // Update the previous cell's visible value immediately without scanning
+                    // every populated cell before the next cursor appears.
+                    cell.text = gridDisplay(address)
+                } else {
+                    refreshVisibleCells()
+                    scheduleFormulaRecalculation()
+                }
             } else {
                 cell.text = gridDisplay(address)
             }
             select(address)
             status.text = if (save) "Updated $sheetName!$address" else "Edit cancelled"
 
-            // Continue with a cell the user tapped while this editor was committing.
-            // This is deliberately after restoring the original TextView and refreshing
-            // the cell, so the next editor attaches to the live view and gets focus.
-            val nextAddress = pendingEditAddress
-            pendingEditAddress = null
-            if (keepKeyboard && nextAddress != null && nextAddress != address) {
+            if (handoffToNextCell) {
                 mainHandler.post {
-                    val target = cellViews[nextAddress]
+                    val target = cellViews[nextAddress!!]
                     if (target != null && editingAddress == null) {
                         select(nextAddress)
                         startInlineEdit(target)
+                        // Preserve auto-width and formula recalculation, but do them after
+                        // the destination editor has been created and requested focus.
+                        mainHandler.post {
+                            formulaDisplayCache.clear()
+                            refreshVisibleCells()
+                            scheduleFormulaRecalculation()
+                        }
+                    } else {
+                        // If the target view disappeared, retain the normal refresh path.
+                        refreshVisibleCells()
+                        scheduleFormulaRecalculation()
                     }
                 }
             }
