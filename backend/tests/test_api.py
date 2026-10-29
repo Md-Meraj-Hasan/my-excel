@@ -417,3 +417,21 @@ def test_filter_formula_returns_matching_rows_and_calculate_spills_results():
     assert rows[0][1]['value'] == 'Ahmed'
     assert rows[1][0]['value'] == 105
     assert rows[1][1]['value'] == 'Sara'
+
+
+def test_history_batch_undo_redo():
+    from niceexcel_api.main import _undo_history, _redo_history
+    book_id = client.post('/workbooks', json={}).get_json()['workbook_id']
+    client.patch(f'/workbooks/{book_id}/cells', json={
+        'sheet': 'Sheet1', 'cells': [{'cell': 'A1', 'value': 'before'}]
+    })
+    # Make an explicit history point using the same internal recorder as normal edits.
+    from niceexcel_api.main import _record_history
+    _record_history(book_id)
+    client.patch(f'/workbooks/{book_id}/cells', json={
+        'sheet': 'Sheet1', 'cells': [{'cell': 'A1', 'value': 'after'}]
+    })
+    response = client.post(f'/workbooks/{book_id}/history-batch', json={'actions': ['undo', 'redo']})
+    assert response.status_code == 200
+    assert response.get_json()['changed'] is True
+    assert len(response.get_json()['results']) == 2

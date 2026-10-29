@@ -93,10 +93,11 @@ def _record_history(book_id: str) -> None:
     _redo_history[book_id] = []
 
 
-def _restore_snapshot(book_id: str, payload: bytes) -> Workbook:
+def _restore_snapshot(book_id: str, payload: bytes, persist: bool = True) -> Workbook:
     wb = load_workbook(io.BytesIO(payload), data_only=False)
     _workbooks[book_id] = wb
-    _persist_workbook(book_id)
+    if persist:
+        _persist_workbook(book_id)
     return wb
 
 
@@ -643,6 +644,53 @@ def redo_workbook_change(book_id: str):
     next_state = history.pop()
     _restore_snapshot(book_id, next_state)
     return {"redone": True, "can_undo": True, "can_redo": bool(history), "autosaved": True}
+
+@app.post("/workbooks/{book_id}/history-batch")
+def workbook_history_batch(book_id: str, request: dict[str, Any]):
+    """Apply queued undo/redo actions and write recovery data only once."""
+    _book(book_id)
+    actions = request.get("actions", [])
+    if not isinstance(actions, list):
+        raise HTTPException(status_code=400, detail="actions must be a list")
+    # Bound the batch so a runaway UI queue cannot monopolize the server.
+    actions = [a for a in actions[:20] if a in ("undo", "redo")]
+    results = []
+    changed = False
+    for action in actions:
+        if action == "undo":
+            history = _undo_history.get(book_id, [])
+            if not history:
+                results.append({"action": action, "changed": False})
+                continue
+            _redo_history.setdefault(book_id, []).append(_snapshot(_book(book_id)))
+            if len(_redo_history[book_id]) > _HISTORY_LIMIT:
+                del _redo_history[book_id][0]
+            previous = history.pop()
+            _restore_snapshot(book_id, previous, persist=False)
+            changed = True
+            results.append({"action": action, "changed": True})
+        else:
+            history = _redo_history.get(book_id, [])
+            if not history:
+                results.append({"action": action, "changed": False})
+                continue
+            _undo_history.setdefault(book_id, []).append(_snapshot(_book(book_id)))
+            if len(_undo_history[book_id]) > _HISTORY_LIMIT:
+                del _undo_history[book_id][0]
+            next_state = history.pop()
+            _restore_snapshot(book_id, next_state, persist=False)
+            changed = True
+            results.append({"action": action, "changed": True})
+    if changed:
+        _persist_workbook(book_id)
+    return {
+        "results": results,
+        "changed": changed,
+        "can_undo": bool(_undo_history.get(book_id)),
+        "can_redo": bool(_redo_history.get(book_id)),
+        "autosaved": changed,
+    }
+
 
 @app.get("/recovery")
 def list_recovery_workbooks():
