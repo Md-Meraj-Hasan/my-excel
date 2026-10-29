@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -143,16 +144,22 @@ class MainActivity : Activity() {
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(5), dp(4), dp(5))
+            setPadding(dp(6), dp(5), dp(6), dp(5))
             setBackgroundColor(Color.rgb(17, 94, 57))
         }
         listOf("File", "Home", "Insert", "Format", "Data", "Formula", "View").forEach { label ->
             val button = tool(label) { showTopMenu(label) }.apply {
                 textSize = 13f
-                setPadding(dp(11), dp(9), dp(11), dp(9))
-                setBackgroundColor(if (label == activeTopSection) Color.rgb(209, 250, 229) else Color.rgb(17, 94, 57))
+                minHeight = dp(34)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = roundedToolbarBackground(
+                    if (label == activeTopSection) Color.rgb(209, 250, 229) else Color.rgb(17, 94, 57),
+                    if (label == activeTopSection) Color.rgb(209, 250, 229) else Color.rgb(17, 94, 57),
+                    10
+                )
                 setTextColor(if (label == activeTopSection) Color.rgb(6, 78, 59) else Color.WHITE)
                 if (label == activeTopSection) typeface = Typeface.DEFAULT_BOLD
+                else typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 setOnClickListener {
                     val sameSection = label == activeTopSection
                     if (sameSection && ribbonToolsVisible) {
@@ -164,9 +171,10 @@ class MainActivity : Activity() {
                         for (i in 0 until toolbar.childCount) {
                             val tab = toolbar.getChildAt(i) as? TextView ?: continue
                             val active = tab.text.toString() == activeTopSection
-                            tab.setBackgroundColor(if (active) Color.rgb(209, 250, 229) else Color.rgb(17, 94, 57))
+                            val tabColor = if (active) Color.rgb(209, 250, 229) else Color.rgb(17, 94, 57)
+                            tab.background = roundedToolbarBackground(tabColor, tabColor, 10)
                             tab.setTextColor(if (active) Color.rgb(6, 78, 59) else Color.WHITE)
-                            tab.typeface = if (active) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                            tab.typeface = if (active) Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
                         }
                         showTopMenu(label)
                         (ribbonTools.parent as? android.view.View)?.visibility = android.view.View.VISIBLE
@@ -185,16 +193,18 @@ class MainActivity : Activity() {
         val toolScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             setFillViewport(false)
-            setBackgroundColor(Color.rgb(239, 246, 241))
+            setBackgroundColor(Color.rgb(232, 240, 235))
+            clipToPadding = false
+            overScrollMode = android.view.View.OVER_SCROLL_IF_CONTENT_SCROLLS
         }
         ribbonTools = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(5), dp(2), dp(5), dp(2))
-            setBackgroundColor(Color.rgb(239, 246, 241))
+            setPadding(dp(7), dp(4), dp(7), dp(4))
+            setBackgroundColor(Color.rgb(232, 240, 235))
         }
-        toolScroll.addView(ribbonTools, android.widget.FrameLayout.LayoutParams(-2, dp(34)))
-        root.addView(toolScroll, LinearLayout.LayoutParams(-1, dp(36)))
+        toolScroll.addView(ribbonTools, android.widget.FrameLayout.LayoutParams(-2, dp(42)))
+        root.addView(toolScroll, LinearLayout.LayoutParams(-1, dp(44)))
         toolScroll.visibility = android.view.View.GONE
 
         val formulaBar=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(6),dp(4),dp(6),dp(4)); setBackgroundColor(Color.rgb(255,255,255)) }
@@ -266,7 +276,7 @@ class MainActivity : Activity() {
         sheetTabs=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
-            setPadding(dp(4),dp(5),dp(4),dp(5))
+            setPadding(dp(6),dp(5),dp(6),dp(5))
             setBackgroundColor(Color.rgb(231,237,233))
             layoutParams = FrameLayout.LayoutParams(-2, -2)
         }
@@ -287,6 +297,15 @@ class MainActivity : Activity() {
             keyboardWasVisible = visibleNow
         }
         render()
+    }
+
+    private fun roundedToolbarBackground(fillColor: Int, strokeColor: Int, radiusDp: Int): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(fillColor)
+            cornerRadius = dp(radiusDp).toFloat()
+            setStroke(dp(1), strokeColor)
+        }
     }
 
     private fun showTopMenu(section: String) {
@@ -356,19 +375,28 @@ class MainActivity : Activity() {
         )
         items.forEach { item ->
             val label = compactLabels[item.first] ?: item.first
+            val isEmphasis = item.first == "AI Auto Fill…"
             val button = TextView(this).apply {
                 text = label
                 contentDescription = item.first
-                textSize = 11f
+                textSize = 10.5f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 gravity = Gravity.CENTER
                 maxLines = 1
-                setTextColor(Color.rgb(35, 70, 50))
-                setPadding(dp(7), dp(3), dp(7), dp(3))
-                setBackgroundColor(Color.TRANSPARENT)
+                setTextColor(if (isEmphasis) Color.rgb(25, 74, 132) else Color.rgb(35, 70, 50))
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                background = roundedToolbarBackground(
+                    if (isEmphasis) Color.rgb(219, 234, 254) else Color.WHITE,
+                    if (isEmphasis) Color.rgb(147, 197, 253) else Color.rgb(204, 218, 209),
+                    9
+                )
+                elevation = dp(1).toFloat()
+                isClickable = true
+                isFocusable = true
                 setOnClickListener { item.second.invoke() }
             }
-            ribbonTools.addView(button, LinearLayout.LayoutParams(-2, dp(30)).apply {
-                marginEnd = dp(3)
+            ribbonTools.addView(button, LinearLayout.LayoutParams(-2, dp(32)).apply {
+                marginEnd = dp(6)
             })
         }
     }
