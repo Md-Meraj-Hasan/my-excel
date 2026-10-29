@@ -54,6 +54,46 @@
 #smartTableDialog::backdrop{background:#020617bb;backdrop-filter:blur(3px)}
 .st-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}.st-head h2{margin:0;font-size:18px}.st-body{padding:16px 18px;display:grid;gap:12px}.st-field{display:grid;gap:5px}.st-field label{color:var(--muted);font-size:12px;font-weight:700}.st-field input,.st-field select{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:7px;background:#0b1220;color:var(--text);min-width:0}.st-checks{display:flex;flex-wrap:wrap;gap:14px}.st-checks label{display:flex;align-items:center;gap:7px}.st-styles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}.st-style{border:2px solid transparent;border-radius:8px;padding:7px;min-width:0;text-align:left}.st-style[aria-pressed="true"]{border-color:var(--green);box-shadow:0 0 0 1px var(--green)}.st-swatch{height:8px;border-radius:3px;margin-bottom:6px}.st-style span{font-size:11px}.st-foot{padding:12px 18px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}.st-filterbar{display:none;align-items:center;gap:7px;flex-wrap:wrap;padding:7px 10px;background:#122b25;border-bottom:1px solid #28634d}.st-filterbar.visible{display:flex}.st-filterbar strong{font-size:12px;color:#a7f3d0}.st-filterbar select,.st-filterbar input{max-width:190px;min-width:90px;padding:6px 8px;border:1px solid #35634f;border-radius:6px;background:#0b1e19;color:var(--text)}.st-filterbar .st-filter-status{font-size:11px;color:#a7f3d0}
 @media(max-width:650px){.st-body{padding:12px}.st-styles{grid-template-columns:repeat(4,minmax(0,1fr))}.st-filterbar{gap:5px;padding:5px}.st-filterbar select,.st-filterbar input{max-width:135px;min-width:75px;font-size:12px}}
+
+/* Context-unavailable toolbar options stay visible but look inactive. */
+.inline-tools .toolmenu button:disabled,
+.inline-tools .toolmenu select:disabled,
+.inline-tools .toolmenu button[aria-disabled="true"],
+.inline-tools .toolmenu select[aria-disabled="true"]{
+  opacity:.30!important;
+  color:#9aa4b2!important;
+  background:#273142!important;
+  border-color:#465164!important;
+  box-shadow:none!important;
+  outline:none!important;
+  filter:grayscale(1);
+  cursor:not-allowed!important;
+  text-shadow:none!important;
+}
+.inline-tools .toolmenu button:disabled:hover,
+.inline-tools .toolmenu select:disabled:hover,
+.inline-tools .toolmenu button[aria-disabled="true"]:hover,
+.inline-tools .toolmenu select[aria-disabled="true"]:hover{
+  opacity:.30!important;
+  color:#9aa4b2!important;
+  background:#273142!important;
+  border-color:#465164!important;
+}
+/* Disabled state takes priority over the selected-option indicator. */
+.inline-tools .toolmenu button.option-indicator-active:disabled,
+.inline-tools .toolmenu select.option-indicator-active:disabled,
+.inline-tools .toolmenu button.option-indicator-active[aria-disabled="true"],
+.inline-tools .toolmenu select.option-indicator-active[aria-disabled="true"]{
+  opacity:.30!important;
+  color:#9aa4b2!important;
+  background:#273142!important;
+  border-color:#465164!important;
+  box-shadow:none!important;
+  outline:none!important;
+  filter:grayscale(1);
+  cursor:not-allowed!important;
+}
+
 </style></head>
 <body>
 <header class="top web-native-toolbar" aria-label="Nice Excel main menu">
@@ -200,12 +240,25 @@
 
    // Keep a visible indicator on the most recently selected option inside a section.
    // Delegation survives moving each section's tool menu into the inline strip.
-   strip.addEventListener('click',event=>{
-     const option=event.target.closest('.toolmenu button, .toolmenu select');
-     if(!option)return;
-     strip.querySelectorAll('.toolmenu .option-indicator-active').forEach(el=>el.classList.remove('option-indicator-active'));
-     option.classList.add('option-indicator-active');
-   });
+   // Capture selection before other toolbar handlers can stop bubbling.
+    // Re-apply after the control's own click handler in case it updates its DOM/state.
+    const markOptionIndicator=(event)=>{
+      const option=event.target.closest('.inline-tools .toolmenu button, .inline-tools .toolmenu select');
+      if(!option || !strip.contains(option)) return;
+      const mark=()=>{
+        if(!strip.contains(option)) return;
+        strip.querySelectorAll('.toolmenu .option-indicator-active').forEach(el=>{
+          if(el!==option) el.classList.remove('option-indicator-active');
+        });
+        option.classList.add('option-indicator-active');
+        option.setAttribute('data-option-indicator','active');
+      };
+      mark();
+      if(event.type==='click') window.setTimeout(mark,0);
+    };
+    strip.addEventListener('pointerdown',markOptionIndicator,true);
+    strip.addEventListener('click',markOptionIndicator,true);
+    strip.addEventListener('change',markOptionIndicator,true);
  })();
 
 
