@@ -1609,8 +1609,11 @@ class MainActivity : Activity() {
                     if (jobId != formulaRecalcJobId.get() || isFinishing || isDestroyed) return@forEach
                     val st = stylesSnapshot[formulaSheet]?.get(address)
                     val cacheKey = "$formulaSheet|$address|$raw|${st?.numberFormat ?: "General"}"
-                    val rendered = runCatching {
-                        val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, raw.drop(1))
+                    val expression = raw.drop(1)
+                    val rendered = if (isDirectDivisionByZero(expression)) {
+                        "#DIV/0!"
+                    } else runCatching {
+                        val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, expression)
                         when {
                             imported?.error == null && imported?.text != null -> imported.text
                             imported?.error == null && imported?.number != null -> formatNumber(imported.number, st?.numberFormat ?: "General", imported.number.toString())
@@ -2657,8 +2660,10 @@ class MainActivity : Activity() {
         }
         val cacheKey = "$sheetName|$address|$raw|${st?.numberFormat ?: "General"}"
         formulaDisplayCache[cacheKey]?.let { return it }
-        val result = try {
-            val expression = raw.drop(1)
+        val expression = raw.drop(1)
+        val result = if (isDirectDivisionByZero(expression)) {
+            "#DIV/0!"
+        } else try {
             // Try the imported Apache POI evaluator first for broad Excel-function coverage.
             val imported = PoiFormulaBridge.evaluate(sheets, sheetName, address, expression)
             when {
@@ -3062,6 +3067,11 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
     }
     private fun Boolean.asNum()=if(this) 1.0 else 0.0
 }
+
+/** Excel-compatible error for a simple numeric division by zero, before POI/fallback evaluation. */
+private fun isDirectDivisionByZero(expression: String): Boolean =
+    Regex("^\\s*[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)\\s*/\\s*[-+]?(?:0+(?:\\.0*)?|\\.0+)\\s*$")
+        .matches(expression)
 
 private class ArithmeticParser(private val source:String) {
     private var pos=0
