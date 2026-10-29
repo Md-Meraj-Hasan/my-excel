@@ -298,6 +298,7 @@ class MainActivity : Activity() {
                 "Merge Top to Bottom" to { mergeCellsDialog(vertical = true) },
                 "Merge Left to Right" to { mergeCellsDialog(vertical = false) },
                 "Unmerge selected range…" to { unmergeCellsDialog() },
+                "AI Auto Fill…" to { autoFillDialog() },
                 "Table tools…" to { tableMenu() }
             )
             "Format" -> listOf(
@@ -1254,6 +1255,146 @@ class MainActivity : Activity() {
         redoHistory.getOrPut(sheetName) { mutableListOf() }.clear()
         if (value.isEmpty()) data.remove(address) else data[address]=value
     }
+
+    /** Fill a destination range by detecting a numeric/text series or copying formulas with relative references. */
+    private fun autoFillDialog() {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        val source = EditText(this).apply {
+            hint = "Pattern/source range, e.g. A1:A2"
+            setSingleLine(true)
+            setText(selectedRangeLabel ?: selected)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+        }
+        val destination = EditText(this).apply {
+            hint = "Fill range, e.g. A1:A20"
+            setSingleLine(true)
+            setText(selectedRangeLabel ?: selected)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+        }
+        panel.addView(TextView(this).apply { text = "Source range contains the pattern or formula. Fill range is the complete area to fill; source cells are kept unchanged." })
+        panel.addView(source)
+        panel.addView(destination)
+        AlertDialog.Builder(this)
+            .setTitle("AI Auto Fill")
+            .setView(panel)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Fill") { _, _ ->
+                val sourceLabel = source.text.toString().trim().uppercase(Locale.ROOT)
+                val targetLabel = destination.text.toString().trim().uppercase(Locale.ROOT)
+                val sourceCells = parseCellRange(sourceLabel)
+                val targetCells = parseCellRange(targetLabel)
+                if (sourceCells.isEmpty() || targetCells.isEmpty()) {
+                    Toast.makeText(this, "Enter valid ranges within the current sheet", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val sourceParts = sourceLabel.split(":")
+                if (sourceParts.size != 2 && sourceCells.size > 1) {
+                    Toast.makeText(this, "Use a source range such as A1:A2 or A1:B1", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val sourceSet = sourceCells.toSet()
+                if (!sourceSet.all { it in targetCells }) {
+                    Toast.makeText(this, "Fill range must include the source range", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val sourceValues = sourceCells.map { data[it].orEmpty() }
+                if (sourceValues.isEmpty() || sourceValues.all { it.isBlank() }) {
+                    Toast.makeText(this, "Source range has no values or formulas", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val srcFirst = cellPosition(sourceCells.first())
+                val srcLast = cellPosition(sourceCells.last())
+                val targetPositions = targetCells.mapNotNull { address -> cellPosition(address)?.let { it to address } }
+                val vertical = srcFirst != null && srcLast != null && srcFirst.second == srcLast.second && srcFirst.first <= srcLast.first
+                val horizontal = srcFirst != null && srcLast != null && srcFirst.first == srcLast.first && srcFirst.second <= srcLast.second
+                if (sourceCells.size > 1 && !vertical && !horizontal) {
+                    Toast.makeText(this, "Source pattern must be one row or one column", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val orderedTargets = if (vertical) targetPositions.sortedBy { it.first.first } else if (horizontal) targetPositions.sortedBy { it.first.second } else targetPositions.sortedWith(compareBy({ it.first.first }, { it.first.second }))
+                val seedNumeric = sourceValues.map { it.toDoubleOrNull() }
+                val numericSeries = sourceValues.size >= 2 && seedNumeric.all { it != null } && (vertical || horizontal)
+                val numericStep = if (numericSeries) seedNumeric.last()!! - seedNumeric[seedNumeric.lastIndex - 1]!! else 0.0
+                val trailingNumber = Regex("^(.*?)(-?\\d+(?:\\.\\d+)?)$")
+                val textMatches = sourceValues.map { trailingNumber.matchEntire(it) }
+                val textSeries = sourceValues.size >= 2 && textMatches.all { it != null } && (vertical || horizontal) &&
+                    textMatches.map { it!!.groupValues[1] }.distinct().size == 1
+                val textStep = if (textSeries) (textMatches.last()!!.groupValues[2].toDoubleOrNull() ?: 0.0) - (textMatches[textMatches.lastIndex - 1]!!.groupValues[2].toDoubleOrNull() ?: 0.0) else 0.0
+                var filled = 0
+                val lastSeedAddress = sourceCells.last()
+                val lastSeedPos = cellPosition(lastSeedAddress)
+                val lastSeedValue = sourceValues.last()
+                undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
+                redoHistory.getOrPut(sheetName) { mutableListOf() }.clear()
+                orderedTargets.forEachIndexed { index, pair ->
+                    val (pos, address) = pair
+                    if (address in sourceSet) return@forEachIndexed
+                    val value = when {
+                        lastSeedValue.trimStart().startsWith("=") && lastSeedPos != null -> translateFormula(lastSeedValue, lastSeedPos, pos)
+                        numericSeries && lastSeedPos != null -> {
+                            val distance = if (vertical) pos.first - lastSeedPos.first else pos.second - lastSeedPos.second
+                            if (distance <= 0) data[address].orEmpty() else formatAutoFillNumber((seedNumeric.last()!! + numericStep * distance))
+                        }
+                        textSeries && lastSeedPos != null -> {
+                            val distance = if (vertical) pos.first - lastSeedPos.first else pos.second - lastSeedPos.second
+                            if (distance <= 0) data[address].orEmpty() else textMatches.last()!!.groupValues[1] + formatAutoFillNumber((textMatches.last()!!.groupValues[2].toDoubleOrNull() ?: 0.0) + textStep * distance)
+                        }
+                        else -> {
+                            // Repeat a single value, or repeat the seed pattern when no trend can be inferred.
+                            val seedIndex = if (vertical) (pos.first - srcFirst!!.first).coerceAtLeast(0) % sourceValues.size
+                                else if (horizontal) (pos.second - srcFirst!!.second).coerceAtLeast(0) % sourceValues.size
+                                else index % sourceValues.size
+                            val seedAddress = sourceCells[seedIndex]
+                            val seedPos = cellPosition(seedAddress)
+                            val valueAtSeed = sourceValues[seedIndex]
+                            if (valueAtSeed.trimStart().startsWith("=") && seedPos != null) translateFormula(valueAtSeed, seedPos, pos) else valueAtSeed
+                        }
+                    }
+                    if (value.isNotEmpty()) { data[address] = value; filled++ }
+                }
+                workbookRevision.incrementAndGet()
+                formulaDisplayCache.clear()
+                render()
+                scheduleFormulaRecalculation()
+                status.text = "AI Auto Fill completed: $filled cell(s) filled in $targetLabel"
+            }.show()
+    }
+
+    private fun cellPosition(address: String): Pair<Int, Int>? {
+        val match = Regex("^([A-Z]+)([0-9]+)$").matchEntire(address.uppercase(Locale.ROOT)) ?: return null
+        val row = match.groupValues[2].toIntOrNull()?.minus(1) ?: return null
+        val col = columnIndex(match.groupValues[1])
+        return if (row >= 0 && col in 0 until colLimit) row to col else null
+    }
+
+    private fun translateFormula(formulaText: String, from: Pair<Int, Int>, to: Pair<Int, Int>): String {
+        val rowDelta = to.first - from.first
+        val colDelta = to.second - from.second
+        val reference = Regex("(?<![A-Za-z0-9_.])(?:(\\$?)([A-Za-z]{1,3})(\\$?)([0-9]+))")
+        return reference.replace(formulaText) { match ->
+            val colAbsolute = match.groupValues[1] == "\$"
+            val colName = match.groupValues[2].uppercase(Locale.ROOT)
+            val rowAbsolute = match.groupValues[3] == "\$"
+            val row = match.groupValues[4].toIntOrNull() ?: return@replace match.value
+            val newCol = if (colAbsolute) columnIndex(colName) else columnIndex(colName) + colDelta
+            val newRow = if (rowAbsolute) row - 1 else row - 1 + rowDelta
+            if (newCol !in 0 until colLimit || newRow < 0) match.value
+            else (if (colAbsolute) "\$" else "") + colNameFromIndex(newCol) + (if (rowAbsolute) "\$" else "") + (newRow + 1)
+        }
+    }
+
+    private fun colNameFromIndex(index: Int): String {
+        var n = index + 1
+        val out = StringBuilder()
+        while (n > 0) { val rem = (n - 1) % 26; out.append(('A'.code + rem).toChar()); n = (n - 1) / 26 }
+        return out.reverse().toString()
+    }
+
+    private fun formatAutoFillNumber(value: Double): String =
+        if (value.isFinite() && value == kotlin.math.floor(value)) value.toLong().toString() else value.toString()
 
     private fun formulaPickerMenu() {
         val formulas = arrayOf("SUM", "AVERAGE", "COUNT", "COUNTA", "MAX", "MIN", "MEDIAN", "PRODUCT", "IF", "IFERROR", "IFNA", "AND", "OR", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "SQRT", "POWER", "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS", "AVERAGEIF", "AVERAGEIFS", "MINIFS", "MAXIFS", "CONCAT", "CONCATENATE", "XLOOKUP", "VLOOKUP", "HLOOKUP", "LOOKUP", "INDEX", "MATCH", "CHOOSE", "OFFSET", "INDIRECT", "LEFT", "RIGHT", "MID", "LEN", "TRIM", "UPPER", "LOWER", "PROPER", "TODAY", "NOW", "DATE", "YEAR", "MONTH", "DAY")
