@@ -99,6 +99,7 @@ class MainActivity : Activity() {
     private var keepEditingOnNextCellTap = false
     // Commits an active inline edit when the IME is dismissed or Android Back is pressed.
     private var activeInlineCommit: (() -> Unit)? = null
+    private var activeInlineCommitForCellChange: (() -> Unit)? = null
     private var keyboardWasVisible = false
     private var selectedRangeCells: List<String> = emptyList()
     private var selectedRangeLabel: String? = null
@@ -964,21 +965,29 @@ class MainActivity : Activity() {
                     val keyboardAlreadyOpen = isSoftKeyboardVisible() || keepEditingOnNextCellTap
                     keepEditingOnNextCellTap = false
                     val previousEditorAddress = editingAddress
+                    // Record the destination synchronously. The current editor may lose focus
+                    // before the posted callback runs, so setting this later can miss the
+                    // hand-off and leave the next cell selected without an editing cursor.
+                    if (keyboardAlreadyOpen && previousEditorAddress != null && previousEditorAddress != key) {
+                        pendingEditAddress = key
+                    }
                     select(key)
                     if (keyboardAlreadyOpen || previousEditorAddress != null || isDoubleTap) {
                         lastTapAddress = null
                         lastTapAt = 0L
-                        // The old EditText can lose focus after this click callback. Do not
-                        // try to open a second editor synchronously: startInlineEdit() would
-                        // see editingAddress != null and silently return, leaving the newly
-                        // selected cell without a cursor. Queue it until the old edit commits.
+                        // If the existing EditText still owns the editing session, commit it
+                        // while keeping the IME open. finish() will launch the queued target
+                        // only after the old cell has been restored and refreshed.
                         cellViews[key]?.post {
-                            if (editingAddress == null) {
-                                val target = cellViews[key] ?: this
-                                select(key)
-                                startInlineEdit(target)
-                            } else {
-                                pendingEditAddress = key
+                            when {
+                                editingAddress == key -> Unit
+                                editingAddress == null -> {
+                                    val target = cellViews[key] ?: this
+                                    select(key)
+                                    startInlineEdit(target)
+                                }
+                                pendingEditAddress == key -> activeInlineCommitForCellChange?.invoke()
+                                else -> pendingEditAddress = key
                             }
                         }
                     } else {
@@ -1239,6 +1248,7 @@ class MainActivity : Activity() {
             }
             editingAddress = null
             activeInlineCommit = null
+            activeInlineCommitForCellChange = null
             keepEditingOnNextCellTap = keepKeyboard
             if (!keepKeyboard) {
                 (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
@@ -1283,6 +1293,7 @@ class MainActivity : Activity() {
         }
         // This callback is also used if the keyboard is hidden with the system Back button.
         activeInlineCommit = { finish(true) }
+        activeInlineCommitForCellChange = { finish(true, keepKeyboard = true) }
         editor.setOnEditorActionListener { _, actionId, event ->
             val enterPressed =
                 actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE ||
