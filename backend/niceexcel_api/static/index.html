@@ -25,6 +25,16 @@
 .web-native-toolbar .toolgroup>summary::-webkit-details-marker{display:none}
 .web-native-toolbar .toolgroup>summary:hover{background:#176d46}
 .web-native-toolbar .toolgroup.active>summary{background:#d1fae5!important;color:#064e3b!important;font-weight:800;border-color:#6ee7b7;box-shadow:inset 0 -3px #10b981}
+/* Show the same clear selection indicator on options inside the active section. */
+.inline-tools .toolmenu button.option-indicator-active,
+.inline-tools .toolmenu select.option-indicator-active{
+  background:#d1fae5!important;color:#064e3b!important;font-weight:800!important;
+  border-color:#6ee7b7!important;box-shadow:inset 0 -3px #10b981!important;
+  outline:1px solid rgba(16,185,129,.25);outline-offset:-1px;
+}
+.inline-tools .toolmenu button:focus-visible,
+.inline-tools .toolmenu select:focus-visible{outline:2px solid #10b981;outline-offset:1px}
+
 .inline-tools{display:none;align-items:center;gap:4px;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;min-height:0;padding:0 6px;background:#10182a;border-bottom:1px solid var(--line);white-space:nowrap;scrollbar-width:none}
 .inline-tools.visible{display:flex;min-height:31px;padding-top:2px;padding-bottom:2px}
 .inline-tools::-webkit-scrollbar{display:none}
@@ -187,6 +197,15 @@
      });
    });
    // Cell selection does not close this strip; only tapping the same section hides it.
+
+   // Keep a visible indicator on the most recently selected option inside a section.
+   // Delegation survives moving each section's tool menu into the inline strip.
+   strip.addEventListener('click',event=>{
+     const option=event.target.closest('.toolmenu button, .toolmenu select');
+     if(!option)return;
+     strip.querySelectorAll('.toolmenu .option-indicator-active').forEach(el=>el.classList.remove('option-indicator-active'));
+     option.classList.add('option-indicator-active');
+   });
  })();
 
 
