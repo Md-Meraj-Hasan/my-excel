@@ -54,7 +54,9 @@ internal object PoiFormulaBridge {
                     val row = sheet.getRow(pos.first) ?: sheet.createRow(pos.first)
                     val cell = row.getCell(pos.second) ?: row.createCell(pos.second)
                     when {
-                        raw.startsWith("=") -> cell.cellFormula = raw.drop(1)
+                        raw.startsWith("=") -> cell.cellFormula = normalizeXor(
+                            normalizeXlookup(normalizeArgumentSeparators(raw.drop(1)))
+                        )
                         raw.toDoubleOrNull() != null -> cell.setCellValue(raw.toDouble())
                         raw.equals("TRUE", ignoreCase = true) -> cell.setCellValue(true)
                         raw.equals("FALSE", ignoreCase = true) -> cell.setCellValue(false)
@@ -67,7 +69,9 @@ internal object PoiFormulaBridge {
             val pos = coordinates(formulaAddress) ?: return@use null
             val row = sheet.getRow(pos.first) ?: sheet.createRow(pos.first)
             val formulaCell = row.getCell(pos.second) ?: row.createCell(pos.second)
-            formulaCell.cellFormula = normalizeXlookup(normalizeArgumentSeparators(expression.removePrefix("=")))
+            formulaCell.cellFormula = normalizeXor(
+                normalizeXlookup(normalizeArgumentSeparators(expression.removePrefix("=")))
+            )
             val evaluator = workbook.creationHelper.createFormulaEvaluator()
             evaluator.clearAllCachedResultValues()
             val value = evaluator.evaluate(formulaCell) ?: return@use null
@@ -82,6 +86,62 @@ internal object PoiFormulaBridge {
     } catch (_: Throwable) {
         // POI does not support every Excel function/version; caller falls back to local engine.
         null
+    }
+
+
+    /**
+     * Apache POI's HSSF evaluator may not support XOR in all supported versions.
+     * Rewrite XOR arguments into equivalent AND/OR/NOT expressions before
+     * loading/evaluating formulas. Handles nested calls and more than two args.
+     */
+    private fun normalizeXor(expression: String): String {
+        var result = expression
+        var searchFrom = 0
+        while (true) {
+            val start = Regex("(?i)XOR\\s*\\(").find(result, searchFrom) ?: break
+            val open = result.indexOf('(', start.range.first)
+            var depth = 0
+            var quoted = false
+            var end = -1
+            var i = open
+            while (i < result.length) {
+                val ch = result[i]
+                if (ch == '"') {
+                    if (quoted && i + 1 < result.length && result[i + 1] == '"') {
+                        i += 2
+                        continue
+                    }
+                    quoted = !quoted
+                }
+                if (!quoted) {
+                    if (ch == '(') depth++
+                    if (ch == ')') {
+                        depth--
+                        if (depth == 0) {
+                            end = i
+                            break
+                        }
+                    }
+                }
+                i++
+            }
+            if (end < 0) break
+
+            val args = splitFormulaArgs(result.substring(open + 1, end)).map { normalizeXor(it) }
+            if (args.size < 2) {
+                searchFrom = end + 1
+                continue
+            }
+
+            // XOR is associative: XOR(a,b,c) = XOR(XOR(a,b),c).
+            var replacement = args[0]
+            for (arg in args.drop(1)) {
+                replacement = "OR(AND(($replacement),NOT(($arg))),AND(NOT(($replacement)),($arg)))"
+            }
+            result = result.substring(0, start.range.first) + replacement + result.substring(end + 1)
+            searchFrom = start.range.first + replacement.length
+        }
+        return result
     }
 
     /**
