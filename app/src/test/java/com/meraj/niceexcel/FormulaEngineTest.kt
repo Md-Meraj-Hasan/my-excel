@@ -145,8 +145,8 @@ class FormulaEngineTest {
     @Test fun directReferenceOptimizationDoesNotBypassPoiForOtherFormulas() {
         val cells = mapOf(
             "D29" to "=XOR(TRUE,FALSE)",
-            "D31" to "=VLOOKUP(\\"P99\\",\\$M\\$2:\\$O\\$6,2,FALSE)",
-            "D20" to "=REPT(\\"A\\",4)",
+            "D31" to "=VLOOKUP(\"P99\",\$M\$2:\$O\$6,2,FALSE)",
+            "D20" to "=REPT(\"A\",4)",
             "D22" to "=MOD(-5,3)",
             "D26" to "=SUMPRODUCT(A1:A3,B1:B3)",
             "D28" to "=PI()"
