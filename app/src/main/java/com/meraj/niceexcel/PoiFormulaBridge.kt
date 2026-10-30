@@ -56,6 +56,8 @@ internal object PoiFormulaBridge {
                     when {
                         raw.startsWith("=") -> cell.cellFormula = raw.drop(1)
                         raw.toDoubleOrNull() != null -> cell.setCellValue(raw.toDouble())
+                        raw.equals("TRUE", ignoreCase = true) -> cell.setCellValue(true)
+                        raw.equals("FALSE", ignoreCase = true) -> cell.setCellValue(false)
                         raw.isNotEmpty() -> cell.setCellValue(raw)
                         else -> cell.setBlank()
                     }
@@ -175,5 +177,4 @@ internal object PoiFormulaBridge {
         out.add(current.toString().trim())
         return out
     }
-
 }
