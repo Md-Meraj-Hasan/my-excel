@@ -806,7 +806,7 @@ class MainActivity : Activity() {
             val column = columnIndex(match.groupValues[1])
             val row = match.groupValues[2].toIntOrNull() ?: return@forEach
             if (column in 0 until colLimit && row !in wrappedRows) {
-                longestByColumn[column] = max(longestByColumn[column], displayForGrid(address).length)
+                longestByColumn[column] = max(longestByColumn[column], display(address).length)
             }
         }
         val columnWidths = longestByColumn.map { max(28, minOf(360, it * 7 + 18)) }
@@ -993,8 +993,6 @@ class MainActivity : Activity() {
         if (canReuseGrid) {
             refreshVisibleCells()
             renderTabs()
-            // Formula cells are rendered from cache; evaluate missing values off the UI thread.
-            scheduleFormulaRecalculation()
             Log.d("NiceExcelPerf", "render sheet=$sheetName mode=reuse ms=${SystemClock.elapsedRealtime() - perfStarted}")
             return
         }
@@ -1014,7 +1012,7 @@ class MainActivity : Activity() {
             val column = columnIndex(match.groupValues[1])
             val row = match.groupValues[2].toIntOrNull() ?: return@forEach
             if (column in 0 until colLimit && row !in wrappedRows) {
-                val shownLength = displayForGrid(address).length
+                val shownLength = display(address).length
                 if (shownLength > longestByColumn[column]) longestByColumn[column] = shownLength
             }
         }
@@ -1042,8 +1040,6 @@ class MainActivity : Activity() {
         // Bottom Add Row bar removed: row insertion remains available in the Insert ribbon.
         applyMergedCellPresentation()
         renderTabs()
-        // Do not evaluate formulas while constructing hundreds of cell views.
-        scheduleFormulaRecalculation()
         Log.d("NiceExcelPerf", "render sheet=$sheetName mode=rebuild cells=${cellViews.size} ms=${SystemClock.elapsedRealtime() - perfStarted}")
     }
 
@@ -1094,7 +1090,7 @@ class MainActivity : Activity() {
         // Re-evaluate formula cells in-place so simple dependencies stay current without
         // destroying/recreating every cell view after each Enter key press.
         data.keys.filter { data[it].orEmpty().startsWith("=") }.forEach { formulaAddress ->
-            val formulaText = displayForGrid(formulaAddress)
+            val formulaText = display(formulaAddress)
             val formulaMatch = Regex("^([A-Z]+)(\\d+)$").matchEntire(formulaAddress) ?: return@forEach
             val formulaCol = columnIndex(formulaMatch.groupValues[1])
             if (formulaText.length * 7 + 18 > (lastColumnWidths.getOrNull(formulaCol) ?: 0)) {
@@ -1110,7 +1106,7 @@ class MainActivity : Activity() {
         val name = colName(column)
         val longest = data.entries.asSequence()
             .filter { it.key.startsWith(name) && it.key.drop(name.length).toIntOrNull() != null }
-            .map { displayForGrid(it.key).length }
+            .map { display(it.key).length }
             .maxOrNull() ?: name.length
         // Three-character default; auto-expand by one character-space per extra character.
         return max(28, minOf(360, longest * 7 + 18))
@@ -1147,7 +1143,7 @@ class MainActivity : Activity() {
      * another cell in the same column has caused that column to auto-expand.
      */
     private fun gridDisplay(address: String): String {
-        val raw = displayForGrid(address)
+        val raw = display(address)
         val row = Regex("^[A-Z]+(\\d+)$").matchEntire(address)
             ?.groupValues?.get(1)?.toIntOrNull()
         if (row == null || row !in wrappedRows || raw.contains('\n')) return raw
@@ -1606,14 +1602,10 @@ class MainActivity : Activity() {
             backgroundExecutor.execute {
                 val results = linkedMapOf<String, Pair<String, String>>()
                 formulas.forEach { (formulaSheet, address, raw) ->
-                    if (jobId != formulaRecalcJobId.get() || isFinishing || isDestroyed) return@forEach
                     val st = stylesSnapshot[formulaSheet]?.get(address)
                     val cacheKey = "$formulaSheet|$address|$raw|${st?.numberFormat ?: "General"}"
-                    val expression = raw.drop(1)
-                    val rendered = if (isDirectDivisionByZero(expression)) {
-                        "#DIV/0!"
-                    } else runCatching {
-                        val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, expression)
+                    val rendered = runCatching {
+                        val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, raw.drop(1))
                         when {
                             imported?.error == null && imported?.text != null -> imported.text
                             imported?.error == null && imported?.number != null -> formatNumber(imported.number, st?.numberFormat ?: "General", imported.number.toString())
@@ -1625,7 +1617,7 @@ class MainActivity : Activity() {
                                 }
                             }
                         } ?: imported?.error ?: "#ERROR"
-                    }.getOrElse { "#ERROR" }
+                    }.getOrElse { error -> error.message?.takeIf { it.startsWith("#") } ?: "#ERROR" }
                     results["$formulaSheet!$address"] = cacheKey to rendered
                 }
                 mainHandler.post {
@@ -2636,21 +2628,6 @@ class MainActivity : Activity() {
         backgroundExecutor.shutdownNow()
         super.onDestroy()
     }
-    /**
-     * Non-blocking display path for grid rendering and cell updates.
-     * A formula cache miss is calculated by scheduleFormulaRecalculation() on the worker.
-     */
-    private fun displayForGrid(address: String): String {
-        val raw = data[address] ?: return ""
-        val st = sheetStyles[address]
-        if (!raw.startsWith("=")) {
-            val n = raw.toDoubleOrNull()
-            return if (n != null && st != null) formatNumber(n, st.numberFormat, raw) else raw
-        }
-        val cacheKey = "$sheetName|$address|$raw|${st?.numberFormat ?: "General"}"
-        return formulaDisplayCache[cacheKey] ?: "…"
-    }
-
     private fun display(address:String):String {
         val raw=data[address] ?: return ""
         val st = sheetStyles[address]
@@ -2660,10 +2637,8 @@ class MainActivity : Activity() {
         }
         val cacheKey = "$sheetName|$address|$raw|${st?.numberFormat ?: "General"}"
         formulaDisplayCache[cacheKey]?.let { return it }
-        val expression = raw.drop(1)
-        val result = if (isDirectDivisionByZero(expression)) {
-            "#DIV/0!"
-        } else try {
+        val result = try {
+            val expression = raw.drop(1)
             // Try the imported Apache POI evaluator first for broad Excel-function coverage.
             val imported = PoiFormulaBridge.evaluate(sheets, sheetName, address, expression)
             when {
@@ -2677,9 +2652,9 @@ class MainActivity : Activity() {
                         val value=engine.eval(expression)
                         if(value.isNaN()||value.isInfinite()) "#NUM!" else formatNumber(value, st?.numberFormat ?: "General", value.toString())
                     }
-                }.getOrElse { imported?.error ?: "#ERROR" }
+                }.getOrElse { error -> error.message?.takeIf { it.startsWith("#") } ?: imported?.error ?: "#ERROR" }
             } ?: "#ERROR"
-        } catch(_:Exception) { "#ERROR" }
+        } catch(error:Exception) { error.message?.takeIf { it.startsWith("#") } ?: "#ERROR" }
         formulaDisplayCache[cacheKey] = result
         return result
     }
@@ -2786,6 +2761,16 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
      */
     fun evalText(expr: String): String? {
         val s = expr.trim()
+        // Preserve explicit Excel error literals and VALUE conversion errors.
+        if (s.equals("#REF!", ignoreCase = true) || s.equals("#REF", ignoreCase = true)) return "#REF!"
+        val valueCall = Regex("(?i)^VALUE\\((.*)\\)$").matchEntire(s)
+        if (valueCall != null) {
+            val argument = valueCall.groupValues[1].trim()
+            val textValue = if (argument.startsWith("\"") && argument.endsWith("\"") && argument.length >= 2)
+                argument.substring(1, argument.length - 1).replace("\"\"", "\"")
+            else argument
+            return textValue.trim().toDoubleOrNull()?.let { formatSimple(it) } ?: "#VALUE!"
+        }
         if (s.startsWith("\"") && s.endsWith("\"") && s.length >= 2) return s.substring(1, s.length - 1).replace("\"\"", "\"")
         val ifErrorMatch = Regex("(?i)^(IFERROR|IFNA)\\((.*)\\)$").matchEntire(s)
         if (ifErrorMatch != null) {
@@ -2794,7 +2779,8 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
             if (args.size >= 2) {
                 val first = args[0].trim()
                 val result = runCatching { evalText(first) ?: formatSimple(eval(first)) }.getOrNull()
-                if (result != null && result != "#ERROR" && result != "#NUM!" && (errorFunction == "IFERROR" || result != "#N/A")) return result
+                val isError = result != null && (result.startsWith("#") || result == "#ERROR")
+                if (result != null && (errorFunction == "IFERROR" && !isError || errorFunction == "IFNA" && result != "#N/A")) return result
                 return evalText(args[1]) ?: runCatching { formatSimple(eval(args[1])) }.getOrElse { args[1].trim().trim('"') }
             }
             return null
@@ -3068,16 +3054,22 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
     private fun Boolean.asNum()=if(this) 1.0 else 0.0
 }
 
-/** Excel-compatible error for a simple numeric division by zero, before POI/fallback evaluation. */
-private fun isDirectDivisionByZero(expression: String): Boolean =
-    Regex("^\\s*[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)\\s*/\\s*[-+]?(?:0+(?:\\.0*)?|\\.0+)\\s*$")
-        .matches(expression)
-
 private class ArithmeticParser(private val source:String) {
     private var pos=0
     fun parse():Double { val v=expression(); skip(); if(pos<source.length) error("Unexpected input"); return v }
     private fun expression():Double { var x=term(); while(true) { skip(); if(eat('+')) x+=term() else if(eat('-')) x-=term() else return x } }
-    private fun term():Double { var x=factor(); while(true) { skip(); if(eat('*')) x*=factor() else if(eat('/')) x/=factor() else return x } }
+    private fun term():Double {
+        var x=factor()
+        while(true) {
+            skip()
+            if(eat('*')) x*=factor()
+            else if(eat('/')) {
+                val divisor = factor()
+                if (divisor == 0.0) throw IllegalStateException("#DIV/0!")
+                x /= divisor
+            } else return x
+        }
+    }
     private fun factor():Double {
         skip(); if(eat('+')) return factor(); if(eat('-')) return -factor()
         if(eat('(')) { val v=expression(); if(!eat(')')) error("Missing )"); return v }
