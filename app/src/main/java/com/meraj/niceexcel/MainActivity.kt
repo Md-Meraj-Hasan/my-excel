@@ -2970,7 +2970,10 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
         }
         // NA() is an explicit Excel error value, not an unrecognized formula.
         if (name == "NA") {
-            return if (args.isEmpty()) "#N/A" else "#VALUE!"
+            // splitArgs("") returns a single empty item, so args.isEmpty()
+            // incorrectly classified the valid NA() call as an invalid argument.
+            // Excel NA takes no arguments; whitespace inside the parentheses is OK.
+            return if (call.groupValues[2].isBlank()) "#N/A" else "#VALUE!"
         }
         // INDEX(reference, row_num, [column_num]) for a cell range.
         // Return Excel's #REF! when the requested row/column is outside the range.
