@@ -2753,7 +2753,7 @@ class MainActivity : Activity() {
             // literal or a formula whose result needs local Boolean/error preservation.
             // Numeric and ordinary text formulas must keep the established POI-first path.
             val preserveReferencedValue = shouldUseLocalReferenceResult(expression, data)
-            val localSpecial = if (preserveReferencedValue || Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
+            val localSpecial = if (preserveReferencedValue || Regex("(?i)^(XOR|VLOOKUP|MATCH)\\s*\\(").containsMatchIn(expression))
                 localEngine.evalText(expression) else null
             if (localSpecial != null) {
                 formulaDisplayCache[cacheKey] = localSpecial
