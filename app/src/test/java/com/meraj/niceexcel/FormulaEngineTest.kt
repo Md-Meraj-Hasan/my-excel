@@ -125,4 +125,19 @@ class FormulaEngineTest {
         assertEquals("300", e.evalText("VLOOKUP(\"P03\",\$M\$2:\$O\$6,2,FALSE)"))
     }
 
+
+    @Test fun directCellReferencesPreserveBooleanAndExcelErrors() {
+        val e = FormulaEngine(mapOf(
+            "D29" to "=XOR(TRUE,FALSE)",
+            "D31" to "=VLOOKUP(\"P99\",\$M\$2:\$O\$6,2,FALSE)",
+            "M2" to "P01", "N2" to "100", "O2" to "Red",
+            "M3" to "P02", "N3" to "200", "O3" to "Green",
+            "M4" to "P03", "N4" to "300", "O4" to "Yellow",
+            "M5" to "P04", "N5" to "400", "O5" to "Blue",
+            "M6" to "P05", "N6" to "500", "O6" to "Black"
+        ))
+        assertEquals("TRUE", e.evalText("D29"))
+        assertEquals("#N/A", e.evalText("D31"))
+    }
+
 }

@@ -1610,7 +1610,8 @@ class MainActivity : Activity() {
                     val rendered = runCatching {
                         val expression = raw.drop(1)
                         val localEngine = FormulaEngine(allSheetsSnapshot[formulaSheet].orEmpty())
-                        val localSpecial = if (Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
+                        val isDirectReference = Regex("(?i)^\\$?[A-Z]{1,3}\\$?\\d+$").matches(expression.trim())
+                        val localSpecial = if (isDirectReference || Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
                             localEngine.evalText(expression) else null
                         if (localSpecial != null) localSpecial else {
                         val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, expression)
@@ -2667,7 +2668,8 @@ class MainActivity : Activity() {
             // Keep local text/error semantics for XOR and VLOOKUP. POI may coerce
             // Boolean/error results to numeric zero in this workbook bridge.
             val localEngine = FormulaEngine(data)
-            val localSpecial = if (Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
+            val isDirectReference = Regex("(?i)^\\$?[A-Z]{1,3}\\$?\\d+$").matches(expression.trim())
+            val localSpecial = if (isDirectReference || Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
                 localEngine.evalText(expression) else null
             if (localSpecial != null) {
                 formulaDisplayCache[cacheKey] = localSpecial
@@ -2795,6 +2797,24 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
      */
     fun evalText(expr: String): String? {
         val s = expr.trim()
+        // Preserve text, Boolean and Excel-error values when a formula directly
+        // references another cell (for example =D29 or =D31).
+        // Numeric references fall through to the numeric evaluator so cell number
+        // formatting and existing numeric behavior remain unchanged.
+        val directReference = Regex("(?i)^\\$?([A-Z]{1,3})\\$?(\\d+)$").matchEntire(s)
+        if (directReference != null) {
+            val address = directReference.groupValues[1].uppercase(Locale.US) + directReference.groupValues[2]
+            val referenced = cells[address] ?: return ""
+            if (referenced.startsWith("=")) {
+                val nested = referenced.drop(1)
+                return evalText(nested) ?: runCatching { formatSimple(eval(nested)) }
+                    .getOrElse { error -> error.message?.takeIf { it.startsWith("#") } ?: "#ERROR" }
+            }
+            if (referenced.startsWith("#")) return referenced
+            if (referenced.equals("TRUE", true) || referenced.equals("FALSE", true)) return referenced.uppercase(Locale.US)
+            if (referenced.toDoubleOrNull() == null) return referenced
+            return null
+        }
         // Preserve explicit Excel error literals and VALUE conversion errors.
         if (s.equals("#REF!", ignoreCase = true) || s.equals("#REF", ignoreCase = true)) return "#REF!"
         val valueCall = Regex("(?i)^VALUE\\((.*)\\)$").matchEntire(s)
