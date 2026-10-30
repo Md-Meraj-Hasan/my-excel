@@ -1608,7 +1608,12 @@ class MainActivity : Activity() {
                     val st = stylesSnapshot[formulaSheet]?.get(address)
                     val cacheKey = "$formulaSheet|$address|$raw|${st?.numberFormat ?: "General"}"
                     val rendered = runCatching {
-                        val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, raw.drop(1))
+                        val expression = raw.drop(1)
+                        val localEngine = FormulaEngine(allSheetsSnapshot[formulaSheet].orEmpty())
+                        val localSpecial = if (Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
+                            localEngine.evalText(expression) else null
+                        if (localSpecial != null) localSpecial else {
+                        val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, expression)
                         when {
                             imported?.error == null && imported?.text != null -> imported.text
                             imported?.error == null && imported?.number != null -> formatNumber(imported.number, st?.numberFormat ?: "General", imported.number.toString())
@@ -1620,6 +1625,7 @@ class MainActivity : Activity() {
                                 }
                             }
                         } ?: imported?.error ?: "#ERROR"
+                        }
                     }.getOrElse { error -> error.message?.takeIf { it.startsWith("#") } ?: "#ERROR" }
                     results["$formulaSheet!$address"] = cacheKey to rendered
                 }
@@ -2658,7 +2664,16 @@ class MainActivity : Activity() {
         formulaDisplayCache[cacheKey]?.let { return it }
         val result = try {
             val expression = raw.drop(1)
-            // Try the imported Apache POI evaluator first for broad Excel-function coverage.
+            // Keep local text/error semantics for XOR and VLOOKUP. POI may coerce
+            // Boolean/error results to numeric zero in this workbook bridge.
+            val localEngine = FormulaEngine(data)
+            val localSpecial = if (Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
+                localEngine.evalText(expression) else null
+            if (localSpecial != null) {
+                formulaDisplayCache[cacheKey] = localSpecial
+                return localSpecial
+            }
+            // Try Apache POI first for all other formulas to preserve existing coverage.
             val imported = PoiFormulaBridge.evaluate(sheets, sheetName, address, expression)
             when {
                 imported?.error == null && imported?.text != null -> imported.text
@@ -3050,7 +3065,10 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
         out.add(cur.toString().trim()); return out
     }
     private fun condition(s:String):Boolean {
-        val m=Regex("(.+?)(>=|<=|<>|=|>|<)(.+)").matchEntire(s.trim())
+        val literal = s.trim()
+        if (literal.equals("TRUE", ignoreCase = true)) return true
+        if (literal.equals("FALSE", ignoreCase = true)) return false
+        val m=Regex("(.+?)(>=|<=|<>|=|>|<)(.+)").matchEntire(literal)
         if(m!=null) {
             val a=atom(m.groupValues[1]); val b=atom(m.groupValues[3])
             return when(m.groupValues[2]) { "="->a==b; "<>"->a!=b; ">"->a>b; "<"->a<b; ">="->a>=b; else->a<=b }
