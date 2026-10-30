@@ -1,6 +1,8 @@
 package com.meraj.niceexcel
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FormulaEngineTest {
@@ -138,6 +140,23 @@ class FormulaEngineTest {
         ))
         assertEquals("TRUE", e.evalText("D29"))
         assertEquals("#N/A", e.evalText("D31"))
+    }
+
+    @Test fun directReferenceOptimizationDoesNotBypassPoiForOtherFormulas() {
+        val cells = mapOf(
+            "D29" to "=XOR(TRUE,FALSE)",
+            "D31" to "=VLOOKUP(\\"P99\\",\\$M\\$2:\\$O\\$6,2,FALSE)",
+            "D20" to "=REPT(\\"A\\",4)",
+            "D22" to "=MOD(-5,3)",
+            "D26" to "=SUMPRODUCT(A1:A3,B1:B3)",
+            "D28" to "=PI()"
+        )
+        assertTrue(shouldUseLocalReferenceResult("D29", cells))
+        assertTrue(shouldUseLocalReferenceResult("D31", cells))
+        assertFalse(shouldUseLocalReferenceResult("D20", cells))
+        assertFalse(shouldUseLocalReferenceResult("D22", cells))
+        assertFalse(shouldUseLocalReferenceResult("D26", cells))
+        assertFalse(shouldUseLocalReferenceResult("D28", cells))
     }
 
 }

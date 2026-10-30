@@ -1609,9 +1609,10 @@ class MainActivity : Activity() {
                     val cacheKey = "$formulaSheet|$address|$raw|${st?.numberFormat ?: "General"}"
                     val rendered = runCatching {
                         val expression = raw.drop(1)
-                        val localEngine = FormulaEngine(allSheetsSnapshot[formulaSheet].orEmpty())
-                        val isDirectReference = Regex("(?i)^\\$?[A-Z]{1,3}\\$?\\d+$").matches(expression.trim())
-                        val localSpecial = if (isDirectReference || Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
+                        val formulaCells = allSheetsSnapshot[formulaSheet].orEmpty()
+                        val localEngine = FormulaEngine(formulaCells)
+                        val preserveReferencedValue = shouldUseLocalReferenceResult(expression, formulaCells)
+                        val localSpecial = if (preserveReferencedValue || Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
                             localEngine.evalText(expression) else null
                         if (localSpecial != null) localSpecial else {
                         val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, expression)
@@ -2668,8 +2669,11 @@ class MainActivity : Activity() {
             // Keep local text/error semantics for XOR and VLOOKUP. POI may coerce
             // Boolean/error results to numeric zero in this workbook bridge.
             val localEngine = FormulaEngine(data)
-            val isDirectReference = Regex("(?i)^\\$?[A-Z]{1,3}\\$?\\d+$").matches(expression.trim())
-            val localSpecial = if (isDirectReference || Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
+            // Only bypass POI for a direct reference when its source is a Boolean/error
+            // literal or a formula whose result needs local Boolean/error preservation.
+            // Numeric and ordinary text formulas must keep the established POI-first path.
+            val preserveReferencedValue = shouldUseLocalReferenceResult(expression, data)
+            val localSpecial = if (preserveReferencedValue || Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(expression))
                 localEngine.evalText(expression) else null
             if (localSpecial != null) {
                 formulaDisplayCache[cacheKey] = localSpecial
@@ -2788,6 +2792,20 @@ class MainActivity : Activity() {
         }
         out.add(cur.toString()); return out
     }
+}
+
+/**
+ * Restrict local evaluation of direct references to values whose type/error marker
+ * POI's workbook bridge may coerce. Ordinary formulas remain on the POI-first path.
+ */
+internal fun shouldUseLocalReferenceResult(expression: String, cells: Map<String, String>): Boolean {
+    val match = Regex("(?i)^\\$?([A-Z]{1,3})\\$?(\\d+)$").matchEntire(expression.trim()) ?: return false
+    val address = match.groupValues[1].uppercase(Locale.US) + match.groupValues[2]
+    val source = cells[address] ?: return false
+    if (source.equals("TRUE", ignoreCase = true) || source.equals("FALSE", ignoreCase = true) || source.startsWith("#")) return true
+    if (!source.trimStart().startsWith("=")) return false
+    val nestedExpression = source.trimStart().drop(1).trim()
+    return Regex("(?i)^(XOR|VLOOKUP)\\s*\\(").containsMatchIn(nestedExpression)
 }
 
 internal class FormulaEngine(private val cells:Map<String,String>) {
