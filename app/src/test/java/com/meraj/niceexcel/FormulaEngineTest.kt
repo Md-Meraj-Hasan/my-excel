@@ -159,4 +159,15 @@ class FormulaEngineTest {
         assertFalse(shouldUseLocalReferenceResult("D28", cells))
     }
 
+    @Test fun formulaTestStatusComparesBooleanAndMatchingErrorResults() {
+        val e = FormulaEngine(mapOf(
+            "D29" to "TRUE", "E29" to "TRUE",
+            "D31" to "#N/A", "E31" to "#N/A",
+            "D32" to "#REF!", "E32" to "#N/A"
+        ))
+        assertEquals("PASS", e.evalText("IF(IFERROR(D29=E29,FALSE),\"PASS\",\"FAIL\")"))
+        assertEquals("PASS", e.evalText("IF(IFERROR(D31=E31,FALSE),\"PASS\",\"FAIL\")"))
+        assertEquals("FAIL", e.evalText("IF(IFERROR(D32=E32,FALSE),\"PASS\",\"FAIL\")"))
+    }
+
 }

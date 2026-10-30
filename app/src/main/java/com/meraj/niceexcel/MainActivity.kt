@@ -3106,12 +3106,102 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
         val literal = s.trim()
         if (literal.equals("TRUE", ignoreCase = true)) return true
         if (literal.equals("FALSE", ignoreCase = true)) return false
+
+        // IFERROR is commonly used by the Formula Tests status column:
+        // IF(IFERROR(actual=expected,FALSE),"PASS","FAIL").
+        // Compare displayed Excel values before coercing them to numbers so
+        // Boolean and matching error values are not silently converted to 0.
+        val ifError = Regex("(?i)^IFERROR\\((.*)\\)$").matchEntire(literal)
+        if (ifError != null) {
+            val args = splitArgs(ifError.groupValues[1])
+            if (args.size >= 2) {
+                val comparison = compareExpression(args[0])
+                if (comparison != null) return comparison
+                return runCatching { condition(args[0]) }
+                    .getOrElse { condition(args[1]) }
+            }
+        }
+
+        compareExpression(literal)?.let { return it }
         val m=Regex("(.+?)(>=|<=|<>|=|>|<)(.+)").matchEntire(literal)
         if(m!=null) {
             val a=atom(m.groupValues[1]); val b=atom(m.groupValues[3])
             return when(m.groupValues[2]) { "="->a==b; "<>"->a!=b; ">"->a>b; "<"->a<b; ">="->a>=b; else->a<=b }
         }
-        return try { eval(s)!=0.0 } catch(_:Exception) { s.trim().equals("TRUE",true) }
+        return try { eval(s)!=0.0 } catch(_:Exception) { false }
+    }
+
+    private fun compareExpression(expression: String): Boolean? {
+        val source = expression.trim()
+        var quoted = false
+        var depth = 0
+        var index = -1
+        var operator = ""
+        var i = 0
+        while (i < source.length) {
+            val ch = source[i]
+            if (ch == '"') {
+                if (quoted && i + 1 < source.length && source[i + 1] == '"') {
+                    i += 2
+                    continue
+                }
+                quoted = !quoted
+            } else if (!quoted) {
+                if (ch == '(') depth++
+                else if (ch == ')') depth--
+                else if (depth == 0) {
+                    val candidate = when {
+                        i + 1 < source.length && source.substring(i, i + 2) in listOf(">=", "<=", "<>") -> source.substring(i, i + 2)
+                        ch in listOf('=', '>', '<') -> ch.toString()
+                        else -> ""
+                    }
+                    if (candidate.isNotEmpty()) {
+                        index = i
+                        operator = candidate
+                        break
+                    }
+                }
+            }
+            i++
+        }
+        if (index < 0) return null
+
+        fun value(token: String): String {
+            val part = token.trim()
+            evalText(part)?.let { return it }
+            return runCatching { formatSimple(eval(part)) }
+                .getOrElse { error -> error.message?.takeIf { it.startsWith("#") } ?: "#ERROR" }
+        }
+        val left = value(source.substring(0, index))
+        val right = value(source.substring(index + operator.length))
+        val leftError = left.startsWith("#")
+        val rightError = right.startsWith("#")
+        if (leftError || rightError) {
+            // For test-result comparisons, identical Excel error codes count
+            // as matching expected/actual outcomes.
+            return if (operator == "=") leftError && rightError && left.equals(right, true)
+                else if (operator == "<>") !(leftError && rightError && left.equals(right, true))
+                else false
+        }
+        val leftBool = left.equals("TRUE", true) || left.equals("FALSE", true)
+        val rightBool = right.equals("TRUE", true) || right.equals("FALSE", true)
+        if (leftBool || rightBool) {
+            val a = left.equals("TRUE", true)
+            val b = right.equals("TRUE", true)
+            return when (operator) { "=" -> a == b; "<>" -> a != b; else -> false }
+        }
+        val aNumber = left.toDoubleOrNull()
+        val bNumber = right.toDoubleOrNull()
+        val comparison = if (aNumber != null && bNumber != null) aNumber.compareTo(bNumber)
+            else left.compareTo(right, ignoreCase = true)
+        return when (operator) {
+            "=" -> comparison == 0
+            "<>" -> comparison != 0
+            ">" -> comparison > 0
+            "<" -> comparison < 0
+            ">=" -> comparison >= 0
+            else -> comparison <= 0
+        }
     }
     private fun atom(s:String):Double {
         val t=s.trim().trim('"')
