@@ -1986,7 +1986,7 @@ class MainActivity : Activity() {
             .setView(wrap)
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Merge") { _, _ ->
-                val range = input.text.toString().trim().uppercase(Locale.ROOT).replace("$", "")
+                val range = input.text.toString().trim().uppercase(Locale.ROOT).replace("\$", "")
                 val cells = parseCellRange(range)
                 val parts = range.split(":")
                 val endpoints = if (parts.size == 2) parts else listOf(range, range)
