@@ -1497,14 +1497,13 @@ class MainActivity : Activity() {
             val handoffToNextCell = keepKeyboard && nextAddress != null && nextAddress != address
 
             if (save) {
-                formulaDisplayCache.clear()
                 if (handoffToNextCell) {
                     // Update the previous cell's visible value immediately without scanning
                     // every populated cell before the next cursor appears.
                     cell.text = gridDisplay(address)
                 } else {
                     refreshEditedCellColumn(address)
-                    scheduleFormulaRecalculation()
+                    scheduleFormulaRecalculation(setOf("$sheetName!$address"))
                 }
             } else {
                 cell.text = gridDisplay(address)
@@ -1521,14 +1520,13 @@ class MainActivity : Activity() {
                         // Preserve auto-width and formula recalculation, but do them after
                         // the destination editor has been created and requested focus.
                         mainHandler.post {
-                            formulaDisplayCache.clear()
-                            refreshEditedCellColumn(address)
-                            scheduleFormulaRecalculation()
+                                        refreshEditedCellColumn(address)
+                            scheduleFormulaRecalculation(setOf("$sheetName!$address"))
                         }
                     } else {
                         // If the target view disappeared, refresh only the edited column.
                         refreshEditedCellColumn(address)
-                        scheduleFormulaRecalculation()
+                        scheduleFormulaRecalculation(setOf("$sheetName!$address"))
                     }
                 }
             }
@@ -1586,20 +1584,91 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Recalculate formulas away from the UI thread. Ordinary cell entry commits immediately;
-     * formulas update their displayed results when the worker finishes. Revision/job checks
-     * prevent stale calculations from overwriting newer edits or a newly selected workbook.
+     * Finds cell references used by a formula. Range references are expanded so edits
+     * anywhere inside a referenced range invalidate the dependent formula.
      */
-    private fun scheduleFormulaRecalculation() {
+    private fun formulaDependencies(
+        formulaSheet: String,
+        formula: String,
+        workbook: Map<String, Map<String, String>>
+    ): Set<String> {
+        val expression = formula.replace(Regex("\"(?:\"\"|[^\"])*\""), " ")
+        val pattern = Regex(
+            "(?i)(?:'([^']+)'|([A-Z0-9_]+))!\\$?([A-Z]{1,3})\\$?(\\d+)(?::\\$?([A-Z]{1,3})\\$?(\\d+))?" +
+                "|(?<![A-Z0-9_!])\\$?([A-Z]{1,3})\\$?(\\d+)(?::\\$?([A-Z]{1,3})\\$?(\\d+))?"
+        )
+        val result = linkedSetOf<String>()
+        pattern.findAll(expression).forEach { match ->
+            val after = expression.substring(match.range.last + 1).trimStart()
+            if (after.startsWith("(")) return@forEach // Ignore function names such as LOG10(
+            val explicitSheet = match.groupValues[1].ifBlank { match.groupValues[2] }
+            val requestedSheet = explicitSheet.ifBlank { formulaSheet }
+            val targetSheet = workbook.keys.firstOrNull { it.equals(requestedSheet, ignoreCase = true) } ?: return@forEach
+            val startColText = match.groupValues[3].ifBlank { match.groupValues[7] }
+            val startRowText = match.groupValues[4].ifBlank { match.groupValues[8] }
+            val endColText = match.groupValues[5].ifBlank { match.groupValues[9] }
+            val endRowText = match.groupValues[6].ifBlank { match.groupValues[10] }
+            val startCol = columnIndex(startColText)
+            val startRow = startRowText.toIntOrNull() ?: return@forEach
+            val endCol = if (endColText.isBlank()) startCol else columnIndex(endColText)
+            val endRow = if (endRowText.isBlank()) startRow else endRowText.toIntOrNull() ?: startRow
+            val minCol = minOf(startCol, endCol)
+            val maxCol = maxOf(startCol, endCol)
+            val minRow = minOf(startRow, endRow)
+            val maxRow = maxOf(startRow, endRow)
+            if (minRow < 1 || maxRow - minRow > 10000 || maxCol - minCol > 100) return@forEach
+            for (row in minRow..maxRow) {
+                for (col in minCol..maxCol) result.add("$targetSheet!${colName(col)}$row")
+            }
+        }
+        return result
+    }
+
+    /**
+     * Recalculate formulas off the UI thread. A null changedCells set is used for
+     * initial workbook/sheet calculation. After an edit, only that cell and its
+     * transitive formula dependents are recalculated; unrelated formulas are skipped.
+     */
+    private fun scheduleFormulaRecalculation(changedCells: Set<String>? = null) {
         val jobId = formulaRecalcJobId.incrementAndGet()
         val revision = workbookRevision.get()
         val activeSheet = sheetName
         val allSheetsSnapshot = sheets.mapValues { (_, cells) -> cells.toMap() }
         val stylesSnapshot = styles.mapValues { (_, map) -> map.toMap() }
-        val formulas = allSheetsSnapshot.flatMap { (name, cells) ->
+        val allFormulas = allSheetsSnapshot.flatMap { (name, cells) ->
             cells.filterValues { it.trimStart().startsWith("=") }.map { (address, raw) -> Triple(name, address, raw) }
         }
+        if (allFormulas.isEmpty()) return
+        val formulas = if (changedCells == null) {
+            allFormulas
+        } else {
+            val dependencies = allFormulas.associate { (name, address, raw) ->
+                "$name!$address" to formulaDependencies(name, raw.drop(1), allSheetsSnapshot)
+            }
+            val affected = changedCells.mapTo(linkedSetOf()) { key ->
+                val split = key.lastIndexOf('!')
+                if (split >= 0) "${key.substring(0, split)}!${key.substring(split + 1).uppercase(Locale.US)}"
+                else "$activeSheet!${key.uppercase(Locale.US)}"
+            }
+            var expanded: Boolean
+            do {
+                expanded = false
+                dependencies.forEach { (formulaKey, refs) ->
+                    if (formulaKey !in affected && refs.any { it in affected }) {
+                        affected.add(formulaKey)
+                        expanded = true
+                    }
+                }
+            } while (expanded)
+            allFormulas.filter { (name, address, _) -> "$name!$address" in affected }
+        }
         if (formulas.isEmpty()) return
+        // Invalidate only results that will actually be recalculated. Cached values for
+        // unrelated formulas remain visible and are not needlessly refreshed.
+        formulas.forEach { (formulaSheet, address, _) ->
+            val prefix = "$formulaSheet|$address|"
+            formulaDisplayCache.keys.removeAll { it.startsWith(prefix) }
+        }
         try {
             backgroundExecutor.execute {
                 val results = linkedMapOf<String, Pair<String, String>>()
@@ -3106,102 +3175,12 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
         val literal = s.trim()
         if (literal.equals("TRUE", ignoreCase = true)) return true
         if (literal.equals("FALSE", ignoreCase = true)) return false
-
-        // IFERROR is commonly used by the Formula Tests status column:
-        // IF(IFERROR(actual=expected,FALSE),"PASS","FAIL").
-        // Compare displayed Excel values before coercing them to numbers so
-        // Boolean and matching error values are not silently converted to 0.
-        val ifError = Regex("(?i)^IFERROR\\((.*)\\)$").matchEntire(literal)
-        if (ifError != null) {
-            val args = splitArgs(ifError.groupValues[1])
-            if (args.size >= 2) {
-                val comparison = compareExpression(args[0])
-                if (comparison != null) return comparison
-                return runCatching { condition(args[0]) }
-                    .getOrElse { condition(args[1]) }
-            }
-        }
-
-        compareExpression(literal)?.let { return it }
         val m=Regex("(.+?)(>=|<=|<>|=|>|<)(.+)").matchEntire(literal)
         if(m!=null) {
             val a=atom(m.groupValues[1]); val b=atom(m.groupValues[3])
             return when(m.groupValues[2]) { "="->a==b; "<>"->a!=b; ">"->a>b; "<"->a<b; ">="->a>=b; else->a<=b }
         }
-        return try { eval(s)!=0.0 } catch(_:Exception) { false }
-    }
-
-    private fun compareExpression(expression: String): Boolean? {
-        val source = expression.trim()
-        var quoted = false
-        var depth = 0
-        var index = -1
-        var operator = ""
-        var i = 0
-        while (i < source.length) {
-            val ch = source[i]
-            if (ch == '"') {
-                if (quoted && i + 1 < source.length && source[i + 1] == '"') {
-                    i += 2
-                    continue
-                }
-                quoted = !quoted
-            } else if (!quoted) {
-                if (ch == '(') depth++
-                else if (ch == ')') depth--
-                else if (depth == 0) {
-                    val candidate = when {
-                        i + 1 < source.length && source.substring(i, i + 2) in listOf(">=", "<=", "<>") -> source.substring(i, i + 2)
-                        ch in listOf('=', '>', '<') -> ch.toString()
-                        else -> ""
-                    }
-                    if (candidate.isNotEmpty()) {
-                        index = i
-                        operator = candidate
-                        break
-                    }
-                }
-            }
-            i++
-        }
-        if (index < 0) return null
-
-        fun value(token: String): String {
-            val part = token.trim()
-            evalText(part)?.let { return it }
-            return runCatching { formatSimple(eval(part)) }
-                .getOrElse { error -> error.message?.takeIf { it.startsWith("#") } ?: "#ERROR" }
-        }
-        val left = value(source.substring(0, index))
-        val right = value(source.substring(index + operator.length))
-        val leftError = left.startsWith("#")
-        val rightError = right.startsWith("#")
-        if (leftError || rightError) {
-            // For test-result comparisons, identical Excel error codes count
-            // as matching expected/actual outcomes.
-            return if (operator == "=") leftError && rightError && left.equals(right, true)
-                else if (operator == "<>") !(leftError && rightError && left.equals(right, true))
-                else false
-        }
-        val leftBool = left.equals("TRUE", true) || left.equals("FALSE", true)
-        val rightBool = right.equals("TRUE", true) || right.equals("FALSE", true)
-        if (leftBool || rightBool) {
-            val a = left.equals("TRUE", true)
-            val b = right.equals("TRUE", true)
-            return when (operator) { "=" -> a == b; "<>" -> a != b; else -> false }
-        }
-        val aNumber = left.toDoubleOrNull()
-        val bNumber = right.toDoubleOrNull()
-        val comparison = if (aNumber != null && bNumber != null) aNumber.compareTo(bNumber)
-            else left.compareTo(right, ignoreCase = true)
-        return when (operator) {
-            "=" -> comparison == 0
-            "<>" -> comparison != 0
-            ">" -> comparison > 0
-            "<" -> comparison < 0
-            ">=" -> comparison >= 0
-            else -> comparison <= 0
-        }
+        return try { eval(s)!=0.0 } catch(_:Exception) { s.trim().equals("TRUE",true) }
     }
     private fun atom(s:String):Double {
         val t=s.trim().trim('"')
