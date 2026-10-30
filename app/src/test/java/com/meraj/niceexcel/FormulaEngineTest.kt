@@ -121,8 +121,8 @@ class FormulaEngineTest {
             "M5" to "P04", "N5" to "400", "O5" to "Blue",
             "M6" to "P05", "N6" to "500", "O6" to "Black"
         ))
-        assertEquals("#N/A", e.evalText("VLOOKUP(\\"P99\\",\\$M\\$2:\\$O\\$6,2,FALSE)"))
-        assertEquals("300", e.evalText("VLOOKUP(\\"P03\\",\\$M\\$2:\\$O\\$6,2,FALSE)"))
+        assertEquals("#N/A", e.evalText("VLOOKUP(\"P99\",\$M\$2:\$O\$6,2,FALSE)"))
+        assertEquals("300", e.evalText("VLOOKUP(\"P03\",\$M\$2:\$O\$6,2,FALSE)"))
     }
 
 }
