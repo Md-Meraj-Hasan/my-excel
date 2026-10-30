@@ -2821,7 +2821,7 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
             }
             return null
         }
-        val call = Regex("(?i)^(XLOOKUP|VLOOKUP|CONCATENATE|CONCAT|LEFT|RIGHT|MID|LEN|LOWER|UPPER|TRIM|PROPER|SUBSTITUTE|REPLACE|FIND|SEARCH|TEXTJOIN)\\((.*)\\)$").matchEntire(s) ?: return null
+        val call = Regex("(?i)^(XLOOKUP|VLOOKUP|XOR|CONCATENATE|CONCAT|LEFT|RIGHT|MID|LEN|LOWER|UPPER|TRIM|PROPER|SUBSTITUTE|REPLACE|FIND|SEARCH|TEXTJOIN)\\((.*)\\)$").matchEntire(s) ?: return null
         val name = call.groupValues[1].uppercase(Locale.US)
         val args = splitArgs(call.groupValues[2])
         fun textArg(arg: String): String {
@@ -2868,11 +2868,17 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
             }
             return notFound
         }
+        if (name == "XOR") {
+            if (args.isEmpty()) return "#VALUE!"
+            return if (args.count { condition(it) } % 2 == 1) "TRUE" else "FALSE"
+        }
         if (name == "VLOOKUP") {
             if (args.size !in 3..4) return "#VALUE!"
             val lookup = textArg(args[0])
-            val tableCells = range(args[1])
-            val bounds = args[1].trim().split(":")
+            // Normalize absolute-reference markers only for this VLOOKUP range.
+            val tableSpec = args[1].trim().replace("$", "")
+            val tableCells = range(tableSpec)
+            val bounds = tableSpec.split(":")
             if (bounds.size != 2) return "#VALUE!"
             val start = runCatching { splitAddress(bounds[0]) }.getOrNull() ?: return "#VALUE!"
             val end = runCatching { splitAddress(bounds[1]) }.getOrNull() ?: return "#VALUE!"
