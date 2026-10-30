@@ -86,4 +86,24 @@ class FormulaEngineTest {
         assertEquals(5.0, e.eval("MEDIAN(C1:C3)"), 0.0001)
     }
 
+    @Test fun xorReturnsTrueWhenExactlyOneArgumentIsTrue() {
+        val e = FormulaEngine(emptyMap())
+        assertEquals("TRUE", e.evalText("XOR(TRUE,FALSE)"))
+        assertEquals("FALSE", e.evalText("XOR(TRUE,TRUE)"))
+        assertEquals("FALSE", e.evalText("XOR(FALSE,FALSE)"))
+        assertEquals("TRUE", e.evalText("XOR(TRUE,FALSE,FALSE)"))
+    }
+
+    @Test fun vlookupAbsoluteRangeReturnsNAWhenLookupIsMissing() {
+        val e = FormulaEngine(mapOf(
+            "M2" to "P01", "N2" to "100", "O2" to "Red",
+            "M3" to "P02", "N3" to "200", "O3" to "Green",
+            "M4" to "P03", "N4" to "300", "O4" to "Yellow",
+            "M5" to "P04", "N5" to "400", "O5" to "Blue",
+            "M6" to "P05", "N6" to "500", "O6" to "Black"
+        ))
+        assertEquals("#N/A", e.evalText("VLOOKUP(\"P99\",$M$2:$O$6,2,FALSE)"))
+        assertEquals("300", e.evalText("VLOOKUP(\"P03\",$M$2:$O$6,2,FALSE)"))
+    }
+
 }
