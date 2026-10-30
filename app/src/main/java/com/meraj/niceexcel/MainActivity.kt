@@ -1681,7 +1681,7 @@ class MainActivity : Activity() {
                         val formulaCells = allSheetsSnapshot[formulaSheet].orEmpty()
                         val localEngine = FormulaEngine(formulaCells)
                         val preserveReferencedValue = shouldUseLocalReferenceResult(expression, formulaCells)
-                        val localSpecial = if (preserveReferencedValue || Regex("(?i)^(XOR|VLOOKUP|MATCH)\\s*\\(").containsMatchIn(expression))
+                        val localSpecial = if (preserveReferencedValue || Regex("(?i)^(XOR|VLOOKUP|MATCH|NA|INDEX)\\s*\\(").containsMatchIn(expression))
                             localEngine.evalText(expression) else null
                         if (localSpecial != null) localSpecial else {
                         val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, expression)
@@ -2753,7 +2753,7 @@ class MainActivity : Activity() {
             // literal or a formula whose result needs local Boolean/error preservation.
             // Numeric and ordinary text formulas must keep the established POI-first path.
             val preserveReferencedValue = shouldUseLocalReferenceResult(expression, data)
-            val localSpecial = if (preserveReferencedValue || Regex("(?i)^(XOR|VLOOKUP|MATCH)\\s*\\(").containsMatchIn(expression))
+            val localSpecial = if (preserveReferencedValue || Regex("(?i)^(XOR|VLOOKUP|MATCH|NA|INDEX)\\s*\\(").containsMatchIn(expression))
                 localEngine.evalText(expression) else null
             if (localSpecial != null) {
                 formulaDisplayCache[cacheKey] = localSpecial
@@ -2885,7 +2885,7 @@ internal fun shouldUseLocalReferenceResult(expression: String, cells: Map<String
     if (source.equals("TRUE", ignoreCase = true) || source.equals("FALSE", ignoreCase = true) || source.startsWith("#")) return true
     if (!source.trimStart().startsWith("=")) return false
     val nestedExpression = source.trimStart().drop(1).trim()
-    return Regex("(?i)^(XOR|VLOOKUP|MATCH)\\s*\\(").containsMatchIn(nestedExpression)
+    return Regex("(?i)^(XOR|VLOOKUP|MATCH|NA|INDEX)\\s*\\(").containsMatchIn(nestedExpression)
 }
 
 internal class FormulaEngine(private val cells:Map<String,String>) {
@@ -2954,7 +2954,7 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
             }
             return null
         }
-        val call = Regex("(?i)^(XLOOKUP|VLOOKUP|MATCH|XOR|CONCATENATE|CONCAT|LEFT|RIGHT|MID|LEN|LOWER|UPPER|TRIM|PROPER|SUBSTITUTE|REPLACE|FIND|SEARCH|TEXTJOIN)\\((.*)\\)$").matchEntire(s) ?: return null
+        val call = Regex("(?i)^(XLOOKUP|VLOOKUP|MATCH|NA|INDEX|XOR|CONCATENATE|CONCAT|LEFT|RIGHT|MID|LEN|LOWER|UPPER|TRIM|PROPER|SUBSTITUTE|REPLACE|FIND|SEARCH|TEXTJOIN)\\((.*)\\)$").matchEntire(s) ?: return null
         val name = call.groupValues[1].uppercase(Locale.US)
         val args = splitArgs(call.groupValues[2])
         fun textArg(arg: String): String {
@@ -2967,6 +2967,40 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
                 return raw
             }
             return runCatching { formatSimple(eval(a)) }.getOrElse { a }
+        }
+        // NA() is an explicit Excel error value, not an unrecognized formula.
+        if (name == "NA") {
+            return if (args.isEmpty()) "#N/A" else "#VALUE!"
+        }
+        // INDEX(reference, row_num, [column_num]) for a cell range.
+        // Return Excel's #REF! when the requested row/column is outside the range.
+        if (name == "INDEX") {
+            if (args.size !in 2..3) return "#VALUE!"
+            val rangeSpec = args[0].trim().replace("$", "")
+            val bounds = rangeSpec.split(":")
+            if (bounds.size !in 1..2) return "#REF!"
+            val start = runCatching { splitAddress(bounds[0]) }.getOrNull() ?: return "#REF!"
+            val end = if (bounds.size == 2) {
+                runCatching { splitAddress(bounds[1]) }.getOrNull() ?: return "#REF!"
+            } else start
+            val minCol = minOf(start.first, end.first)
+            val maxCol = maxOf(start.first, end.first)
+            val minRow = minOf(start.second, end.second)
+            val maxRow = maxOf(start.second, end.second)
+            val rowCount = maxRow - minRow + 1
+            val colCount = maxCol - minCol + 1
+            val rowNum = runCatching { eval(args[1]).toInt() }.getOrElse { return "#VALUE!" }
+            val colNum = if (args.size >= 3) {
+                runCatching { eval(args[2]).toInt() }.getOrElse { return "#VALUE!" }
+            } else 1
+            if (rowNum < 1 || colNum < 1 || rowNum > rowCount || colNum > colCount) return "#REF!"
+            val address = col(minCol + colNum - 1) + (minRow + rowNum - 1)
+            val raw = cells[address].orEmpty()
+            if (!raw.startsWith("=")) return raw
+            return evalText(raw.drop(1))
+                ?: runCatching { formatSimple(eval(raw.drop(1))) }.getOrElse { error ->
+                    error.message?.takeIf { it.startsWith("#") } ?: "#ERROR"
+                }
         }
         if (name == "XLOOKUP") {
             if (args.size !in 3..6) return "#VALUE!"
@@ -3253,7 +3287,17 @@ internal class FormulaEngine(private val cells:Map<String,String>) {
         return try { eval(s)!=0.0 } catch(_:Exception) { s.trim().equals("TRUE",true) }
     }
     private fun atom(s:String):Double {
-        val t=s.trim().trim('"')
+        val token = s.trim()
+        val t = token.trim('"')
+        val ref = token.uppercase(Locale.US)
+        if (Regex("^\\$?[A-Z]{1,3}\\$?\\d+$").matches(ref)) {
+            val address = ref.replace("$", "")
+            val raw = cells[address].orEmpty()
+            val resolved = if (raw.startsWith("=")) {
+                evalText(raw.drop(1)) ?: runCatching { formatSimple(eval(raw.drop(1))) }.getOrDefault("#ERROR")
+            } else raw
+            return resolved.toDoubleOrNull() ?: resolved.hashCode().toDouble()
+        }
         return t.toDoubleOrNull() ?: numeric(t) ?: t.hashCode().toDouble()
     }
     private fun matches(value:String,criterion:String):Boolean {
