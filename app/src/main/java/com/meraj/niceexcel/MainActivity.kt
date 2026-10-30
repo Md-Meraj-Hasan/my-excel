@@ -1720,7 +1720,11 @@ class MainActivity : Activity() {
     private fun putCell(address:String,value:String) {
         cachedExplicitLineCountsByRow = null
         workbookRevision.incrementAndGet()
-        formulaDisplayCache.clear()
+        // Do not clear the whole formula cache here. The edit handler immediately
+        // schedules dependency-based recalculation, which invalidates only the
+        // edited formula and its transitive dependents. Keeping other entries avoids
+        // flashing unrelated formula cells to the pending placeholder (…)
+        // and avoids needless memory/CPU work on large workbooks.
         undoHistory.getOrPut(sheetName) { mutableListOf() }.add(data.toMap())
         redoHistory.getOrPut(sheetName) { mutableListOf() }.clear()
         if (value.isEmpty()) data.remove(address) else data[address]=value
@@ -1877,8 +1881,15 @@ class MainActivity : Activity() {
             }.showProfessional()
     }
     private fun applyFormula() {
-        putCell(selected,formula.text.toString()); render(); status.text="Updated $sheetName!$selected"
-        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(formula.windowToken,0)
+        val editedAddress = selected
+        putCell(editedAddress, formula.text.toString())
+        // Formula-bar edits use the same dependency-only path as inline cell edits.
+        // Avoid render(), because a full render schedules a workbook-wide calculation.
+        refreshEditedCellColumn(editedAddress)
+        scheduleFormulaRecalculation(setOf("$sheetName!$editedAddress"))
+        status.text = "Updated $sheetName!$editedAddress"
+        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+            .hideSoftInputFromWindow(formula.windowToken, 0)
     }
     private fun undo() {
         val stack = undoHistory.getOrPut(sheetName) { mutableListOf() }
