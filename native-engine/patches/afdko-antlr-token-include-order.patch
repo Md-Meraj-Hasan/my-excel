@@ -1,5 +1,5 @@
---- a4/runtime/src/tree/pattern/ParseTreePatternMatcher.cpp
-+++ a4/runtime/src/tree/pattern/ParseTreePatternMatcher.cpp
+--- afdko/a4/runtime/src/tree/pattern/ParseTreePatternMatcher.cpp
++++ afdko/a4/runtime/src/tree/pattern/ParseTreePatternMatcher.cpp
 @@ -3,6 +3,7 @@
   * can be found in the LICENSE.txt file in the project root.
   */
