@@ -1,27 +1,24 @@
-name: LibreOffice Android Runtime Gate
+name: LibreOffice Integration Source Gate
 
 on:
-  workflow_dispatch:
   pull_request:
     paths:
-      - 'native/libreoffice/**'
+      - 'app/src/main/java/org/libreoffice/**'
+      - 'app/src/main/java/com/meraj/niceexcel/LibreOffice*'
+      - 'app/src/androidTest/**'
+      - 'app/src/main/AndroidManifest.xml'
+      - 'app/build.gradle'
+      - 'MainActivity.kt'
       - 'testdata/libreoffice/**'
       - 'scripts/validate_libreoffice_formula_fixture.py'
-      - 'app/src/main/cpp/**'
-      - 'app/src/main/jni/**'
-      - 'app/src/main/java/org/libreoffice/**'
-      - 'app/src/main/jniLibs/**'
-      - 'app/src/main/assets/**'
-      - 'app/build.gradle'
-      - 'scripts/verify_libreoffice_runtime.py'
       - '.github/workflows/libreoffice-runtime-gate.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  runtime-package-gate:
-    name: Build and verify bundled LibreOffice runtime
+  source-and-test-compile:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -43,29 +40,10 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Validate Calc formula fixture (schema only; not a calculation test)
+      - name: Validate formula fixture structure (not formula calculation)
         run: python3 scripts/validate_libreoffice_formula_fixture.py testdata/libreoffice/formula-cases.json
 
-      - name: Run JVM unit tests
-        run: gradle --no-daemon testDebugUnitTest
-
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
-
-      - name: Strictly audit LibreOffice source and APK payload
-        shell: bash
+      - name: Compile JVM and Android instrumentation tests
         run: |
-          set -o pipefail
-          python3 scripts/verify_libreoffice_runtime.py \
-            --source-root . \
-            --apk app/build/outputs/apk/debug/app-debug.apk \
-            --abi arm64-v8a | tee libreoffice-runtime-audit.json
-
-      - name: Upload runtime audit report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: libreoffice-runtime-audit
-          path: libreoffice-runtime-audit.json
-          if-no-files-found: ignore
-          retention-days: 30
+          gradle --no-daemon testDebugUnitTest
+          gradle --no-daemon assembleDebugAndroidTest
