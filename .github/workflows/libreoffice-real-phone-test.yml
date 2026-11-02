@@ -7,9 +7,6 @@ on:
         description: "Successful Build NiceExcel APK with LibreOffice ARM64 workflow Run ID"
         required: true
         type: string
-  workflow_run:
-    workflows: ["Build NiceExcel APK with LibreOffice ARM64"]
-    types: [completed]
 
 permissions:
   contents: read
