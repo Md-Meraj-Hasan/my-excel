@@ -92,12 +92,14 @@ The exact JNI signatures must be fixed in a versioned interface header and mirro
 
 ## 4. Required native source and runtime inventory
 
+**Build-system correction:** do not assume that adding `externalNativeBuild { cmake }` to the Android app can produce the LibreOffice core. The official Android build combines the needed LibreOffice/UNO static archives and app-specific native code into the LO Android shared library. NiceExcel's JNI adapter must be compiled as part of that same LibreOffice core build (or a verified equivalent fork/overlay), then the resulting ABI-matched library is packaged by the Android app.
+
 ### A. Source/build inputs (must be pinned)
 - Official LibreOffice core source commit/tag and its license notices.
 - LibreOffice Android bootstrap sources from `android/Bootstrap` (including LOK Java/JNI bootstrap classes and supporting event/thread classes actually used).
-- LibreOffice Android build configuration and `solenv/bin/native-code.py` registration for the required services.
-- JNI adapter C++ source and public header owned by NiceExcel.
-- NDK, SDK, CMake/build-system versions matching the selected LibreOffice source revision.
+- LibreOffice Android build configuration: `android/Module_android.mk`, `android/CustomTarget_lo_android.mk`, `sal/android/lo-bootstrap.c`, and `solenv/bin/native-code.py` service/constructor registration as appropriate for the selected source revision.
+- JNI adapter C++ source and public header owned by NiceExcel, plus a reproducible patch/overlay that integrates it into the official LibreOffice Android gbuild target.
+- NDK and SDK versions matching the selected LibreOffice source revision. The official LibreOffice Android core is built through LibreOffice's own cross-build/gbuild system; a standalone app-level CMake build is not a substitute for linking the bridge into the monolithic LO core.
 - Reproducible build script, checksums, build logs and SBOM/license inventory.
 
 ### B. ARM64 APK payload (must be proven from a real built artifact)
@@ -191,7 +193,7 @@ Compare numeric results with tolerance; compare text, booleans and error codes e
 | Matching LO native dependency set | Missing / unverified |
 | Official Android LOK bootstrap Java sources | Missing |
 | NiceExcel JNI adapter C++ source | Missing |
-| CMake/NDK native build integration | Missing |
+| LibreOffice gbuild/native bridge integration patch | Missing |
 | LO runtime assets / registry payload | Missing |
 | Native service registration manifest | Missing |
 | Runtime/API version contract | Missing |
