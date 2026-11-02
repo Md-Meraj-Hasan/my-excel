@@ -82,6 +82,18 @@ def main() -> int:
             errors.append(f"Missing source requirement: {label}")
     report["checks"]["source_files"] = source_status
 
+    manifest_path = root / "native/libreoffice/runtime-manifest.json"
+    runtime_manifest = {}
+    if manifest_path.is_file():
+        try:
+            runtime_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if runtime_manifest.get("schema_version") != 1:
+                errors.append("Unsupported LibreOffice runtime manifest schema")
+        except Exception as exc:
+            errors.append(f"Invalid runtime manifest: {exc}")
+    else:
+        errors.append("Missing native/libreoffice/runtime-manifest.json")
+
     if not apk.is_file():
         errors.append(f"APK not found: {apk}")
         print(json.dumps(report, indent=2))
@@ -98,6 +110,33 @@ def main() -> int:
                 errors.append("Compiled DEX does not contain the LibreOfficeKit bootstrap marker")
 
             runtime_files = [n for n in names if n.startswith(RUNTIME_PREFIXES)]
+            required_runtime = runtime_manifest.get("required_runtime_file_basenames", [])
+            packaged_basenames = {Path(n).name for n in names}
+            missing_runtime = [name for name in required_runtime if name not in packaged_basenames]
+            if missing_runtime:
+                errors.append(f"Missing required LibreOffice runtime files: {missing_runtime}")
+
+            required_native = runtime_manifest.get("native_libraries_from_official_android_bootstrap_loader", [])
+            native_status = {}
+            for abi in abis:
+                for library in required_native:
+                    lib_path = f"lib/{abi}/{library}"
+                    if lib_path not in name_set:
+                        native_status[f"{abi}/{library}"] = "MISSING"
+                        errors.append(f"Missing required native dependency: {lib_path}")
+                    else:
+                        lib_data = zf.read(lib_path)
+                        machine = elf_machine(lib_data)
+                        expected_machine = ABI_MACHINES[abi]
+                        native_status[f"{abi}/{library}"] = {
+                            "size_bytes": len(lib_data),
+                            "elf_machine": machine,
+                            "arch_matches": machine == expected_machine,
+                        }
+                        if len(lib_data) < 4096:
+                            errors.append(f"{lib_path} is unexpectedly small/truncated ({len(lib_data)} bytes)")
+                        if machine != expected_machine:
+                            errors.append(f"{lib_path} ELF machine mismatch: got {machine}, expected {expected_machine}")
             if not runtime_files:
                 errors.append("No recognized LibreOffice runtime asset directory found in APK")
 
@@ -130,7 +169,7 @@ def main() -> int:
 
             report["checks"]["bootstrap_dex_present"] = bootstrap_present
             report["checks"]["runtime_asset_file_count"] = len(runtime_files)
-            report["checks"]["license_notice_file_count"] = len(license_files)
+            report["checks"]["required_runtime_files"] = {"expected": required_runtime, "missing": missing_runtime}\n            report["checks"]["native_libraries"] = native_status\n            report["checks"]["license_notice_file_count"] = len(license_files)
             report["checks"]["abis"] = abi_status
 
             readelf = shutil.which("readelf")
