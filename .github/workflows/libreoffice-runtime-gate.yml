@@ -19,6 +19,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: libreoffice-source-gate-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   source-and-test-compile:
     runs-on: ubuntu-latest
