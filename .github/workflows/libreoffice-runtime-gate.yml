@@ -1,0 +1,77 @@
+name: LibreOffice Android Runtime Gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'app/src/main/cpp/**'
+      - 'app/src/main/jni/**'
+      - 'app/src/main/java/org/libreoffice/**'
+      - 'app/src/main/jniLibs/**'
+      - 'app/src/main/assets/**'
+      - 'app/build.gradle'
+      - 'scripts/verify_libreoffice_runtime.py'
+      - 'docs/LIBREOFFICE-CALC-ANDROID-INTEGRATION-BLUEPRINT.md'
+      - '.github/workflows/libreoffice-runtime-gate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-package-gate:
+    name: Build and verify bundled LibreOffice runtime
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Run JVM unit tests
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Strictly audit LibreOffice source and APK payload
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 scripts/verify_libreoffice_runtime.py \
+            --source-root . \
+            --apk app/build/outputs/apk/debug/app-debug.apk \
+            --abi arm64-v8a | tee libreoffice-runtime-audit.json
+
+      - name: Upload runtime audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libreoffice-runtime-audit
+          path: libreoffice-runtime-audit.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  physical-device-acceptance:
+    name: Real ARM64 phone formula acceptance
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Acceptance gate placeholder
+        run: |
+          echo "Enable only after a real ARM64 device farm or attached-device runner is configured."
+          echo "Release acceptance requires device-side LibreOffice initialization, formula, save/reopen, and lifecycle tests."
+          exit 1
