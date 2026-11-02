@@ -11,7 +11,6 @@ on:
       - 'app/src/main/assets/**'
       - 'app/build.gradle'
       - 'scripts/verify_libreoffice_runtime.py'
-      - 'docs/LIBREOFFICE-CALC-ANDROID-INTEGRATION-BLUEPRINT.md'
       - '.github/workflows/libreoffice-runtime-gate.yml'
 
 permissions:
@@ -64,14 +63,4 @@ jobs:
           path: libreoffice-runtime-audit.json
           if-no-files-found: ignore
           retention-days: 30
-
-  physical-device-acceptance:
-    name: Real ARM64 phone formula acceptance
-    if: false
-    runs-on: ubuntu-latest
-    steps:
-      - name: Acceptance gate placeholder
-        run: |
-          echo "Enable only after a real ARM64 device farm or attached-device runner is configured."
-          echo "Release acceptance requires device-side LibreOffice initialization, formula, save/reopen, and lifecycle tests."
-          exit 1
+\n
