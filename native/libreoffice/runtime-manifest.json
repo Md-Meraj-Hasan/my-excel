@@ -33,13 +33,12 @@
     "registry_en-US.xcd"
   ],
   "bootstrap_class": "org.libreoffice.kit.LibreOfficeKit",
-  "native_bridge_source": "native/libreoffice/src/niceexcel_calc_bridge.cxx",
-  "core_build_patch": "native/libreoffice/patches/0001-niceexcel-calc-jni.patch",
   "runtime_assets_root": "assets/program/",
   "notes": [
     "This is an explicit verification contract, not proof that any of these files are currently packaged.",
     "Reconcile the source_commit and exact loader list against the original diagnostics archive before producing release binaries.",
-    "The six runtime files are required because a previous NiceExcel runtime audit reported them missing."
+    "The six runtime files are required because a previous NiceExcel runtime audit reported them missing.",
+    "The selected initial integration uses the official LOK Java/JNI wrappers and .uno:CalculateHard with completion callback; a custom C++ JNI bridge is not required for this milestone."
   ],
   "build_environment": {
     "libreoffice_source_commit": "6e0b39149b549bd05065d451006c4d060589891d",
@@ -88,5 +87,22 @@
     "machine_id": 183,
     "dynamic_dependencies_verified": true,
     "unresolved_non_platform_dependencies": []
+  },
+  "lok_bootstrap_sources": [
+    "app/src/main/java/org/libreoffice/kit/LibreOfficeKit.java",
+    "app/src/main/java/org/libreoffice/kit/Office.java",
+    "app/src/main/java/org/libreoffice/kit/Document.java",
+    "app/src/main/java/org/libreoffice/kit/DirectBufferAllocator.java"
+  ],
+  "engine_adapter_sources": [
+    "app/src/main/java/com/meraj/niceexcel/LibreOfficeCalcEngine.kt",
+    "app/src/main/java/com/meraj/niceexcel/LibreOfficeEngineService.java",
+    "app/src/main/java/com/meraj/niceexcel/LibreOfficeServiceClient.kt"
+  ],
+  "runtime_asset_artifact_details": {
+    "entry_count": 78,
+    "uncompressed_bytes": 16737097,
+    "required_final_apk_paths_present_after_assets_and_assets_strippedUI_merge": true,
+    "final_apk_assets_must_be_store_uncompressed": true
   }
 }
