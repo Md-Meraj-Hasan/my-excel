@@ -3,7 +3,7 @@
   "engine": "LibreOffice Calc Android",
   "source_repository": "https://github.com/LibreOffice/core",
   "source_commit": "6e0b39149b549bd05065d451006c4d060589891d",
-  "source_commit_status": "historical_diagnostic_reference_pending_archive_reconciliation",
+  "source_commit_status": "verified against the native-core ZIP and ARM64-BUILD-MANIFEST from workflow run 41280547094",
   "required_abis": [
     "arm64-v8a"
   ],
@@ -49,7 +49,7 @@
     "native_core_artifact_run_id": 41280547094,
     "native_core_artifact_id": 13076063462,
     "runtime_assets_artifact_id": 13076337479,
-    "status": "artifacts downloaded and archive integrity inspected; no device calculation test yet"
+    "status": "native-core ZIP, runtime-assets ZIP and diagnostics ZIP downloaded; archive CRC, ELF architecture, SHA-256 and dependency closure verified in this session; real-device calculation not yet tested"
   },
   "historical_sha256": {
     "libc++_shared.so": "4397241b4bd20a8e579bfb41d21107857e12985f6a01ca0c2a5f83380d1270b4",
@@ -78,7 +78,9 @@
     "assets/unpack/program/oovbaapi.rdb",
     "assets/unpack/etc/fonts/fonts.conf",
     "assets/share/registry/main.xcd",
-    "assets/share/registry/res/registry_en-US.xcd"
+    "assets/share/registry/res/registry_en-US.xcd",
+    "assets/licenses/MPL-2.0.txt",
+    "assets/licenses/THIRD-PARTY-LICENSES.md"
   ],
   "apk_asset_compression": "STORE (no compression) for every assets/ entry; the source ZIP artifact may itself be compressed",
   "native_core_elf_verification": {
