@@ -1,0 +1,144 @@
+name: Build NiceExcel APK with LibreOffice ARM64
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'native-engine/scripts/check-apk-libreoffice.sh'
+      - '.github/workflows/build-apk-with-libreoffice.yml'
+  workflow_dispatch:
+    inputs:
+      native_run_id:
+        description: "Successful LibreOffice native-core workflow Run ID (including runtime assets)"
+        required: true
+        type: string
+  workflow_run:
+    workflows: ["Build official LibreOffice Android ARM64 core"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download LibreOffice ARM64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libreoffice-arm64-native-core
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id || inputs.native_run_id || '41280547094' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: /tmp/libreoffice-core
+
+      - name: Download matching LibreOffice runtime assets
+        uses: actions/download-artifact@v4
+        with:
+          name: libreoffice-arm64-runtime-assets
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id || inputs.native_run_id || '41280547094' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: /tmp/libreoffice-runtime
+
+      - name: Stage LibreOffice runtime assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=app/src/main/assets
+          mkdir -p "$ROOT"
+          test -s /tmp/libreoffice-runtime/assets/program/fundamentalrc
+          test -s /tmp/libreoffice-runtime/assets/unpack/program/sofficerc
+          cp -a /tmp/libreoffice-runtime/assets/. "$ROOT/"
+          cp -a /tmp/libreoffice-runtime/assets_strippedUI/. "$ROOT/"
+          FONT_CONF="$ROOT/unpack/etc/fonts/fonts.conf"
+          test -s "$FONT_CONF"
+          sed -i -E 's#/data/data/[^/]+/fontconfig#/data/data/com.meraj.niceexcel/fontconfig#g' "$FONT_CONF"
+          grep -q '/data/data/com.meraj.niceexcel/fontconfig' "$FONT_CONF"
+          for required in program/fundamentalrc program/bootstraprc program/unorc program/services.rdb unpack/program/sofficerc share/registry/main.xcd share/registry/res/registry_en-US.xcd; do
+            test -s "$ROOT/$required" || { echo "Missing LibreOffice runtime asset: $required" >&2; exit 1; }
+          done
+          echo "Staged $(find "$ROOT" -type f | wc -l) LibreOffice runtime files"
+
+      - name: Stage native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-engine/jniLibs/arm64-v8a
+          mapfile -t libs < <(find /tmp/libreoffice-core -type f -name '*.so' -print)
+          test "${#libs[@]}" -eq 14
+          for lib in "${libs[@]}"; do
+            cp -v "$lib" native-engine/jniLibs/arm64-v8a/
+          done
+          test -s native-engine/jniLibs/arm64-v8a/liblo-native-code.so
+          count=$(find native-engine/jniLibs/arm64-v8a -maxdepth 1 -name '*.so' | wc -l)
+          echo "Native libraries found: $count"
+          test "$count" -eq 14
+
+      - name: Verify repository LibreOffice Java bootstrap is retained
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use the checked-in NiceExcel bootstrap adapter. Do not overwrite it
+          # with upstream Java sources: the adapter extracts UNO registries
+          # before JNI startup and validates the runtime layout.
+          for source in \
+            app/src/main/java/org/libreoffice/kit/LibreOfficeKit.java \
+            app/src/main/java/org/libreoffice/kit/Office.java \
+            app/src/main/java/org/libreoffice/kit/Document.java; do
+            test -s "$source" || { echo "Missing checked-in LibreOffice bootstrap source: $source" >&2; exit 1; }
+          done
+          grep -q 'prepareUnpackedRuntime' app/src/main/java/org/libreoffice/kit/LibreOfficeKit.java
+          echo "Using checked-in NiceExcel LibreOffice bootstrap adapter."
+          
+      - name: Verify ARM64 architecture
+        run: bash native-engine/scripts/check-arm64-core.sh
+
+      - name: Verify native dependencies
+        run: bash native-engine/scripts/check-native-dependency-closure.sh
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Run unit tests and compile official Java bootstrap
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Verify native, Java bootstrap, and runtime prerequisites
+        run: |
+          gradle --no-daemon :app:verifyLibreOfficeArm64Core
+          gradle --no-daemon :app:verifyLibreOfficeRuntimeAssets
+
+      - name: Build APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Verify LibreOffice library inside APK
+        run: bash native-engine/scripts/check-apk-libreoffice.sh app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload ARM64 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NiceExcel-LibreOffice-ARM64-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
