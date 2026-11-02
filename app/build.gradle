@@ -12,6 +12,14 @@ android {
         noCompress += ""
     }
 
+    // Compress the very large native core in the downloadable APK; Android
+    // extracts JNI libraries at install time before System.loadLibrary().
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
     // Native core is staged from the same pinned LibreOffice ARM64 build.
     sourceSets {
         main {
