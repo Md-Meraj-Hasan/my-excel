@@ -5,6 +5,9 @@ on:
     branches: [feature/libreoffice-calc-runtime-blueprint]
     paths:
       - '.github/workflows/build-libreoffice-arm64.yml'
+      - 'native-engine/scripts/build-libreoffice-android-arm64.sh'
+      - 'native-engine/scripts/check-arm64-core.sh'
+      - 'native-engine/scripts/check-native-dependency-closure.sh'
   workflow_dispatch:
     inputs:
       libreoffice_ref:
