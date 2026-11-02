@@ -9,7 +9,6 @@ import org.apache.poi.ss.usermodel.CellType
 import org.apache.poi.ss.usermodel.FormulaError
 import org.apache.poi.ss.usermodel.WorkbookFactory
 import org.apache.poi.ss.util.CellReference
-import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.json.JSONObject
 import org.libreoffice.kit.Document
 import org.libreoffice.kit.LibreOfficeKit
@@ -216,32 +215,23 @@ object LibreOfficeCalcEngine {
     }
 
     private fun writeSnapshot(file: File, snapshot: Map<String, Map<String, String>>) {
-        XSSFWorkbook().use { workbook ->
-            val sheets = if (snapshot.isEmpty()) mapOf("Sheet1" to emptyMap()) else snapshot
-            sheets.forEach { (sheetName, values) ->
-                require(sheetName.isNotBlank()) { "Worksheet name cannot be blank" }
-                val sheet = workbook.createSheet(sheetName)
-                values.forEach cellLoop@{ (address, rawValue) ->
-                    val ref = runCatching { CellReference(address) }.getOrNull()
-                        ?: throw IllegalArgumentException("Invalid cell address '$address' in '$sheetName'")
-                    val columnIndex = ref.col.toInt()
-                    if (ref.row < 0 || columnIndex < 0 || rawValue.isEmpty()) return@cellLoop
-                    val row = sheet.getRow(ref.row) ?: sheet.createRow(ref.row)
-                    val cell = row.getCell(columnIndex) ?: row.createCell(columnIndex)
-                    val value = rawValue.trim()
-                    when {
-                        value.startsWith("=") -> cell.cellFormula = value.drop(1)
-                        value.equals("TRUE", ignoreCase = true) -> cell.setCellValue(true)
-                        value.equals("FALSE", ignoreCase = true) -> cell.setCellValue(false)
-                        value.toDoubleOrNull() != null -> cell.setCellValue(value.toDouble())
-                        else -> cell.setCellValue(rawValue)
-                    }
-                }
-            }
-            FileOutputStream(file).use { output ->
-                workbook.write(output)
-                output.fd.sync()
-            }
+        val normalizedSheets = snapshot.mapValues { (_, cells) ->
+            cells.mapValues { (_, raw) ->
+                if (raw.trimStart().startsWith("=")) raw.trimStart() else raw
+            }.toMutableMap()
+        }.toMutableMap()
+        if (normalizedSheets.isEmpty()) normalizedSheets["Sheet1"] = mutableMapOf()
+
+        val emptyStyles = normalizedSheets.keys.associateWith { mutableMapOf<String, CellStyle>() }
+            .toMutableMap()
+        val emptyMerges = normalizedSheets.keys.associateWith { mutableListOf<String>() }
+            .toMutableMap()
+
+        FileOutputStream(file).use { output ->
+            // Reuse NiceExcel's raw OOXML writer so unknown/new Excel formulas are
+            // preserved verbatim; POI is only used to read Calc's saved result cache.
+            XlsxCodec.write(output, normalizedSheets, emptyStyles, null, emptyMerges)
+            output.fd.sync()
         }
     }
 
