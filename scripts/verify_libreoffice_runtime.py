@@ -78,7 +78,7 @@ def main() -> int:
     }
     source_status = {}
     for label, candidates in source_requirements.items():
-        found = any(p.exists() for p in candidates)
+        found = any((p.is_dir() and any(p.rglob("*.cpp"))) or p.is_file() for p in candidates)
         source_status[label] = found
         if not found:
             errors.append(f"Missing source requirement: {label}")
