@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -20,6 +21,8 @@ import android.widget.*
 import android.widget.FrameLayout
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
+import java.io.File
+import java.io.FileOutputStream
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
@@ -2827,6 +2830,85 @@ class MainActivity : Activity() {
         val i=Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="text/csv"; putExtra(Intent.EXTRA_TITLE,"${sheetName}.csv") }
         startActivityForResult(i,11)
     }
+    private fun saveXlsxWithLibreOffice(destination: Uri) {
+        val sheetsSnapshot = sheets.mapValues { (_, cells) -> cells.toMap() }
+        val stylesSnapshot = styles.mapValues { (_, cellStyles) -> cellStyles.toMap() }
+        val mergedSnapshot = mergedRangesBySheet.mapValues { (_, ranges) -> ranges.toList() }
+        val metadataSnapshot = reportingMetadata
+        val revision = workbookRevision.get()
+        status.text = "Saving workbook through LibreOffice Calc…"
+
+        try {
+            saveExecutor.execute {
+                val workDir = File(cacheDir, "niceexcel-save").apply {
+                    check(isDirectory || mkdirs()) { "Cannot create workbook save directory" }
+                }
+                val input = File.createTempFile("niceexcel-before-calc-", ".xlsx", workDir)
+                val output = File.createTempFile("niceexcel-after-calc-", ".xlsx", workDir)
+                try {
+                    FileOutputStream(input).use { stream ->
+                        XlsxCodec.write(
+                            stream,
+                            sheetsSnapshot,
+                            stylesSnapshot,
+                            metadataSnapshot,
+                            mergedSnapshot
+                        )
+                        stream.fd.sync()
+                    }
+
+                    val expectedFormulaKeys = sheetsSnapshot.flatMap { (name, cells) ->
+                        cells.filterValues { it.trimStart().startsWith("=") }
+                            .keys.map { address -> "$name!${address.uppercase(Locale.US)}" }
+                    }.toSet()
+
+                    val finalFile = if (expectedFormulaKeys.isNotEmpty()) {
+                        LibreOfficeServiceClient.recalculateFile(this@MainActivity, input, output)
+                        val cached = LibreOfficeCalcEngine.readFormulaResults(output)
+                        val missing = expectedFormulaKeys.filterNot { cached.containsKey(it) }
+                        check(missing.isEmpty()) {
+                            "Calc save verification returned ${cached.size}/${expectedFormulaKeys.size} formula results; missing: ${missing.take(12)}"
+                        }
+                        output
+                    } else {
+                        input
+                    }
+
+                    check(revision == workbookRevision.get()) {
+                        "Workbook changed while LibreOffice was calculating. Please save again."
+                    }
+                    val destinationStream = contentResolver.openOutputStream(destination)
+                        ?: error("Unable to open the selected save destination")
+                    destinationStream.use { stream ->
+                        finalFile.inputStream().use { source -> source.copyTo(stream) }
+                    }
+
+                    mainHandler.post {
+                        if (!isFinishing && !isDestroyed) {
+                            status.text = if (expectedFormulaKeys.isNotEmpty()) {
+                                "Excel workbook saved • LibreOffice verified ${expectedFormulaKeys.size} formulas"
+                            } else {
+                                "Excel workbook saved"
+                            }
+                        }
+                    }
+                } catch (failure: Throwable) {
+                    Log.e("NiceExcel-Save", "LIBREOFFICE_SAVE_FAILURE", failure)
+                    mainHandler.post {
+                        if (!isFinishing && !isDestroyed) {
+                            status.text = "Save failed: ${failure.message ?: failure.javaClass.simpleName}"
+                        }
+                    }
+                } finally {
+                    input.delete()
+                    output.delete()
+                }
+            }
+        } catch (failure: RejectedExecutionException) {
+            status.text = "Save queue is busy; please retry"
+        }
+    }
+
     @Deprecated("Deprecated")
     override fun onActivityResult(requestCode:Int,resultCode:Int,intent:Intent?) {
         super.onActivityResult(requestCode,resultCode,intent)
@@ -2836,8 +2918,8 @@ class MainActivity : Activity() {
                 contentResolver.openOutputStream(intent.data!!)?.use { it.write(pendingCsv.toByteArray(Charsets.UTF_8)) }
                 status.text="CSV saved"
             } else if(requestCode==13) {
-                contentResolver.openOutputStream(intent.data!!)?.use { XlsxCodec.write(it, sheets, styles, reportingMetadata, mergedRangesBySheet) }
-                status.text="Excel workbook (.xlsx) saved"
+                saveXlsxWithLibreOffice(intent.data!!)
+                return
             } else if(requestCode==12) {
                 val text=contentResolver.openInputStream(intent.data!!)?.bufferedReader()?.use { it.readText() }.orEmpty()
                 data.clear(); sheetStyles.clear(); formulaDisplayCache.clear()
