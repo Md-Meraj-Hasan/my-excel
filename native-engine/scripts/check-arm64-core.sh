@@ -23,15 +23,35 @@ if [[ "$CLASS" != "ELF64" || "$MACHINE" != *AArch64* || "$TYPE" != *DYN* ]]; the
   exit 4
 fi
 
+required=(
+  libc++_shared.so libfreebl3.so liblo-native-code.so libnspr4.so
+  libnss3.so libnssckbi.so libnssdbm3.so libnssutil3.so
+  libplc4.so libplds4.so libsmime3.so libsoftokn3.so
+  libsqlite3.so libssl3.so
+)
+for name in "${required[@]}"; do
+  f="$LIB_DIR/$name"
+  if [[ ! -s "$f" ]]; then
+    echo "ERROR: Required matching LibreOffice ARM64 library is missing: $f" >&2
+    exit 5
+  fi
+  file_class=$("$READELF" -h "$f" | awk -F: '/Class:/{gsub(/^[ \\t]+/,"",$2); print $2}')
+  file_machine=$("$READELF" -h "$f" | awk -F: '/Machine:/{gsub(/^[ \\t]+/,"",$2); print $2}')
+  if [[ "$file_class" != "ELF64" || "$file_machine" != *AArch64* ]]; then
+    echo "ERROR: $name is not ELF64 AArch64 (class=$file_class machine=$file_machine)" >&2
+    exit 6
+  fi
+done
+
 shopt -s nullglob
 SO_FILES=("$LIB_DIR"/*.so)
-if [[ ${#SO_FILES[@]} -eq 0 ]]; then
-  echo "ERROR: No shared libraries found in $LIB_DIR" >&2
-  exit 5
+if [[ ${#SO_FILES[@]} -ne ${#required[@]} ]]; then
+  echo "ERROR: Expected exactly ${#required[@]} ARM64 .so files; found ${#SO_FILES[@]}." >&2
+  exit 7
 fi
 
-echo "OK: Real ARM64 LibreOffice core found. Native libraries to package:"
+echo "OK: All ${#required[@]} LibreOffice ARM64 libraries are ELF64 AArch64:"
 for f in "${SO_FILES[@]}"; do
-  printf ' - %s (%s bytes)\n' "$(basename "$f")" "$(stat -c %s "$f")"
+  printf ' - %s (%s bytes)\\n' "$(basename "$f")" "$(stat -c %s "$f")"
 done
 sha256sum "${SO_FILES[@]}"
