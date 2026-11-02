@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "engine": "LibreOffice Calc Android",
+  "source_repository": "https://github.com/LibreOffice/core",
+  "source_commit": "6e0b39149b549bd05065d451006c4d060589891d",
+  "source_commit_status": "historical_diagnostic_reference_pending_archive_reconciliation",
+  "required_abis": [
+    "arm64-v8a"
+  ],
+  "jni_library": "liblo-native-code.so",
+  "native_libraries_from_official_android_bootstrap_loader": [
+    "libnspr4.so",
+    "libplds4.so",
+    "libplc4.so",
+    "libnssutil3.so",
+    "libfreebl3.so",
+    "libsqlite3.so",
+    "libsoftokn3.so",
+    "libnss3.so",
+    "libnssckbi.so",
+    "libnssdbm3.so",
+    "libsmime3.so",
+    "libssl3.so",
+    "libc++_shared.so",
+    "liblo-native-code.so"
+  ],
+  "required_runtime_file_basenames": [
+    "fundamentalrc",
+    "bootstraprc",
+    "unorc",
+    "sofficerc",
+    "main.xcd",
+    "registry_en-US.xcd"
+  ],
+  "bootstrap_class": "org.libreoffice.kit.LibreOfficeKit",
+  "native_bridge_source": "native/libreoffice/src/niceexcel_calc_bridge.cxx",
+  "core_build_patch": "native/libreoffice/patches/0001-niceexcel-calc-jni.patch",
+  "runtime_assets_root": "assets/program/",
+  "notes": [
+    "This is an explicit verification contract, not proof that any of these files are currently packaged.",
+    "Reconcile the source_commit and exact loader list against the original diagnostics archive before producing release binaries.",
+    "The six runtime files are required because a previous NiceExcel runtime audit reported them missing."
+  ]
+}
