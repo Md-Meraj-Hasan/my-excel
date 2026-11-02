@@ -243,7 +243,7 @@ jobs:
           if (!(Test-Path $adb)) { throw "adb.exe not found: $adb" }
           & $adb start-server
           & $adb devices -l
-          $online = @(& $adb devices | Select-String "\\sdevice$")
+          $online = @(& $adb devices | Select-String "\sdevice$")
           if ($online.Count -ne 1) { throw "Connect exactly one authorized Android phone; found $($online.Count) online devices." }
           $abi = (& $adb shell getprop ro.product.cpu.abi).Trim()
           $android = (& $adb shell getprop ro.build.version.release).Trim()
@@ -271,7 +271,7 @@ jobs:
         run: |
           $output = & $env:ANDROID_ADB shell am instrument -w -r com.meraj.niceexcel.test/androidx.test.runner.AndroidJUnitRunner 2>&1
           $output | Tee-Object -FilePath instrumentation-output.txt
-          if ($LASTEXITCODE -ne 0 -or -not ($output -match "OK \\(2 tests\\)")) {
+          if ($LASTEXITCODE -ne 0 -or -not ($output -match "OK \(2 tests\)")) {
             throw "LibreOffice Calc instrumentation tests did not report OK (2 tests)."
           }
 
