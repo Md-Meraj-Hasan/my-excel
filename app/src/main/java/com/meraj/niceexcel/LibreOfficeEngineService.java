@@ -105,12 +105,12 @@ public final class LibreOfficeEngineService extends Service {
 
     @Override
     public void onDestroy() {
-        // Close the native Office handle on the same LOK worker that created it.
-        try {
-            LibreOfficeCalcEngine.INSTANCE.closeOffice();
-        } catch (Throwable failure) {
-            Log.e(TAG, "Error while closing LibreOfficeKit Office", failure);
-        }
+        // Do not destroy the static Office handle here. A bound-only Service can be
+        // recreated while its isolated process is still alive; LibreOfficeKit's
+        // bootstrap has process-wide one-time initialization and cannot safely
+        // recreate a destroyed native handle in that same process. Keep the Office
+        // session reusable; Android process death releases it. Document handles are
+        // still destroyed after every calculation.
         requestExecutor.shutdown();
         super.onDestroy();
     }
