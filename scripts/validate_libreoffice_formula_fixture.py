@@ -23,6 +23,14 @@ for item in expected:
         errors.append(f"expected target is missing from fixture sheets: {key}")
     elif not str(sheets[key[0]][key[1]]).startswith("="):
         errors.append(f"expected target is not a formula: {key}")
+formula_input_count = sum(
+    1 for sheet in sheets.values() for value in sheet.values()
+    if isinstance(value, str) and value.startswith("=")
+)
+if len(expected) != formula_input_count:
+    errors.append(
+        f"expected result count {len(expected)} does not cover all {formula_input_count} formula inputs"
+    )
 required_categories = {"DIV_ZERO", "NUM", "VALUE", "REF"}
 actual_categories = {x.get("category") for x in expected if x.get("type") == "error"}
 if not required_categories.issubset(actual_categories):
