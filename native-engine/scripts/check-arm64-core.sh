@@ -41,6 +41,20 @@ for name in "${required[@]}"; do
     echo "ERROR: $name is not ELF64 AArch64 (class=$file_class machine=$file_machine)" >&2
     exit 6
   fi
+
+  # Android 15+ devices may use 16 KB memory pages. Every PT_LOAD segment
+  # in every bundled shared library must therefore have p_align >= 0x4000.
+  while IFS= read -r align; do
+    [[ "$align" =~ ^0x[0-9a-fA-F]+$ ]] || {
+      echo "ERROR: Could not parse PT_LOAD alignment '$align' in $name" >&2
+      exit 8
+    }
+    value=$((16#${align#0x}))
+    if (( value < 16384 )); then
+      echo "ERROR: $name has PT_LOAD alignment $align (< 0x4000). Rebuild with 16 KB ELF linker alignment." >&2
+      exit 9
+    fi
+  done < <("$READELF" -lW "$f" | awk '$1 == "LOAD" { print $NF }')
 done
 
 shopt -s nullglob
@@ -50,7 +64,7 @@ if [[ ${#SO_FILES[@]} -ne ${#required[@]} ]]; then
   exit 7
 fi
 
-echo "OK: All ${#required[@]} LibreOffice ARM64 libraries are ELF64 AArch64:"
+echo "OK: All ${#required[@]} LibreOffice ARM64 libraries are ELF64 AArch64 with 16 KB PT_LOAD alignment:"
 for f in "${SO_FILES[@]}"; do
   printf ' - %s (%s bytes)\n' "$(basename "$f")" "$(stat -c %s "$f")"
 done
