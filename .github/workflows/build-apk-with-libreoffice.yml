@@ -24,6 +24,10 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: niceexcel-libreoffice-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
