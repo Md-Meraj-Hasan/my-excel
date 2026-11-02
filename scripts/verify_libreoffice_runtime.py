@@ -63,16 +63,26 @@ def main() -> int:
     errors: list[str] = report["errors"]  # type: ignore[assignment]
 
     source_requirements = {
-        "NiceExcel JNI adapter C++": [
-            root / "native/libreoffice/src/niceexcel_calc_bridge.cxx",
-        ],
-        "Runtime manifest": [root / "native/libreoffice/runtime-manifest.json"],
-        "LibreOffice core build integration patch": [
-            root / "native/libreoffice/patches/0001-niceexcel-calc-jni.patch",
-        ],
-        "LibreOffice Android bootstrap source": [
+        "LibreOfficeKit bootstrap": [
             root / "app/src/main/java/org/libreoffice/kit/LibreOfficeKit.java",
-            root / "app/src/main/java/org/libreoffice/kit/LibreOfficeKit.kt",
+            root / "app/src/main/java/org/libreoffice/kit/Office.java",
+            root / "app/src/main/java/org/libreoffice/kit/Document.java",
+            root / "app/src/main/java/org/libreoffice/kit/DirectBufferAllocator.java",
+        ],
+        "Calc engine adapter": [
+            root / "app/src/main/java/com/meraj/niceexcel/LibreOfficeCalcEngine.kt",
+        ],
+        "Isolated engine service": [
+            root / "app/src/main/java/com/meraj/niceexcel/LibreOfficeEngineService.java",
+        ],
+        "File-based service client": [
+            root / "app/src/main/java/com/meraj/niceexcel/LibreOfficeServiceClient.kt",
+        ],
+        "Runtime manifest": [
+            root / "native/libreoffice/runtime-manifest.json",
+        ],
+        "MPL-2.0 third-party notices": [
+            root / "native-engine/THIRD-PARTY-LICENSES.md",
         ],
     }
     source_status = {}
