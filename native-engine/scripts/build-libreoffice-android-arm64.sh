@@ -24,6 +24,34 @@ SDK="$(cd "$SDK" && pwd)"
 NDK="$(cd "$NDK" && pwd)"
 LO_SRC="$(cd "$LO_SRC" && pwd)"
 
+# Apply a narrowly scoped upstream ANTLR include-order fix before LibreOffice
+# unpacks/compiles AFDKO. ParseTreePatternMatcher.cpp must see the complete
+# antlr4::Token definition before ParseTreePattern.h instantiates token owners.
+PATCH_SOURCE="$ROOT/native-engine/patches/afdko-antlr-token-include-order.patch"
+AFDKO_MK="$LO_SRC/external/afdko/UnpackedTarball_afdko.mk"
+PATCH_DEST="$LO_SRC/external/afdko/niceexcel-antlr-token-include-order.patch"
+[[ -s "$PATCH_SOURCE" ]] || fail "Missing NiceExcel AFDKO patch: $PATCH_SOURCE"
+[[ -s "$AFDKO_MK" ]] || fail "Missing LibreOffice AFDKO unpack recipe: $AFDKO_MK"
+cp -f "$PATCH_SOURCE" "$PATCH_DEST"
+python3 - "$AFDKO_MK" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+marker = "    external/afdko/clang.patch.0 \\\n"
+entry = "    external/afdko/niceexcel-antlr-token-include-order.patch \\\n"
+if text.count(marker) != 1:
+    raise SystemExit("Could not uniquely locate AFDKO patch list insertion point")
+if entry not in text:
+    text = text.replace(marker, marker + entry, 1)
+path.write_text(text, encoding="utf-8")
+if text.count(entry) != 1:
+    raise SystemExit("NiceExcel AFDKO patch was not registered exactly once")
+print("Registered targeted AFDKO ANTLR include-order patch.")
+PY
+
+
 # Use LibreOffice's dedicated AArch64 Android distro configuration.
 # Do NOT combine --host=aarch64-linux-android with LibreOfficeAndroid:
 # that 32-bit distro config appends --host=arm-linux-androideabi later,
