@@ -63,15 +63,13 @@ def main() -> int:
     errors: list[str] = report["errors"]  # type: ignore[assignment]
 
     source_requirements = {
-        "JNI adapter C++": [
-            root / "app/src/main/cpp",
-            root / "app/src/main/jni",
+        "NiceExcel JNI adapter C++": [
+            root / "native/libreoffice/src/niceexcel_calc_bridge.cxx",
         ],
-        "CMake/native build definition": [
-            root / "app/src/main/cpp/CMakeLists.txt",
-            root / "app/src/main/CMakeLists.txt",
+        "LibreOffice core build integration patch": [
+            root / "native/libreoffice/patches/0001-niceexcel-calc-jni.patch",
         ],
-        "LibreOffice bootstrap source": [
+        "LibreOffice Android bootstrap source": [
             root / "app/src/main/java/org/libreoffice/kit/LibreOfficeKit.java",
             root / "app/src/main/java/org/libreoffice/kit/LibreOfficeKit.kt",
         ],
