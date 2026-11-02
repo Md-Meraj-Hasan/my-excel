@@ -29,8 +29,8 @@ import java.util.concurrent.atomic.AtomicReference
  * bootstrap. All LOK initialization and document calls are serialized on one
  * dedicated thread in the isolated :libreoffice service process.
  *
- * POI is used only to create an XLSX snapshot and read Calc-written cached
- * results. No POI FormulaEvaluator is called here.
+ * NiceExcel's raw OOXML codec creates the XLSX snapshot; POI is used only to
+ * read Calc-written cached results. No POI FormulaEvaluator is called here.
  */
 object LibreOfficeCalcEngine {
     private const val TAG = "NiceExcel-LO-Calc"
