@@ -93,6 +93,30 @@ def main() -> int:
             errors.append(f"Missing source requirement: {label}")
     report["checks"]["source_files"] = source_status
 
+    main_activity_path = root / "app/src/main/java/com/meraj/niceexcel/MainActivity.kt"
+    manifest_path = root / "app/src/main/AndroidManifest.xml"
+    gradle_path = root / "app/build.gradle"
+    if main_activity_path.is_file():
+        main_source = main_activity_path.read_text(encoding="utf-8")
+        start = main_source.find("private fun scheduleFormulaRecalculation(")
+        end = main_source.find("private fun putCell(", start)
+        active_calc = main_source[start:end] if start >= 0 and end > start else ""
+        if "LibreOfficeServiceClient.recalculateSnapshot" not in active_calc:
+            errors.append("Native scheduleFormulaRecalculation is not routed through LibreOfficeServiceClient")
+        if "PoiFormulaBridge.evaluate" in active_calc or "FormulaEngine(" in active_calc:
+            errors.append("POI/Kotlin fallback evaluator is still present in the active Native formula path")
+        if "saveXlsxWithLibreOffice" not in main_source:
+            errors.append("Native XLSX Save path is not routed through LibreOffice")
+    if manifest_path.is_file():
+        manifest_text = manifest_path.read_text(encoding="utf-8")
+        if 'android:process=":libreoffice"' not in manifest_text or 'android:exported="false"' not in manifest_text:
+            errors.append("AndroidManifest does not declare the private :libreoffice service process")
+    if gradle_path.is_file():
+        gradle_text = gradle_path.read_text(encoding="utf-8")
+        for token in ['noCompress += ""', "native-engine/jniLibs", "poi-ooxml:5.4.1"]:
+            if token not in gradle_text:
+                errors.append(f"app/build.gradle is missing required LibreOffice packaging configuration: {token}")
+
     manifest_path = root / "native/libreoffice/runtime-manifest.json"
     runtime_manifest = {}
     if manifest_path.is_file():
