@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "description": "Deterministic LibreOffice Calc integration test vectors. Formula inputs use NiceExcel's Excel-English/A1 user syntax and must be translated by the LO formula parser before UNO XCell.setFormula.",
+  "input_formula_grammar": "EXCEL_A1_ENGLISH",
+  "assertions": {
+    "numeric_tolerance": 0.000001,
+    "exact_text": true,
+    "exact_boolean": true,
+    "formula_errors_must_be_typed": true,
+    "fallback_engine_calls_allowed": false
+  },
+  "sheets": {
+    "Basic": {
+      "A1": "10",
+      "A2": "20",
+      "A3": "30",
+      "B1": "=SUM(A1:A3)",
+      "B2": "=AVERAGE(A1:A3)",
+      "B3": "=COUNT(A1:A3)",
+      "C1": "=1+2",
+      "C2": "=A1*2"
+    },
+    "Sales Data": {
+      "A1": "Item",
+      "B1": "Amount",
+      "A2": "Pen",
+      "B2": "100.5",
+      "A3": "Book",
+      "B3": "200",
+      "A4": "Bag",
+      "B4": "50"
+    },
+    "Lookup": {
+      "A1": "ID",
+      "B1": "Name",
+      "A2": "101",
+      "B2": "Apple",
+      "A3": "102",
+      "B3": "Orange",
+      "A4": "103",
+      "B4": "Mango"
+    },
+    "CrossSheet": {
+      "A1": "=SUM('Sales Data'!B2:B4)",
+      "A2": "=VLOOKUP(102,Lookup!A2:B4,2,FALSE)",
+      "A3": "=INDEX(Lookup!B2:B4,MATCH(102,Lookup!A2:A4,0))",
+      "A4": "=XLOOKUP(102,Lookup!A2:A4,Lookup!B2:B4,\"Not Found\")"
+    },
+    "Errors": {
+      "A1": "=1/0",
+      "A2": "=SQRT(-1)",
+      "A3": "=VALUE(\"abc\")",
+      "A4": "=INDIRECT(\"NoSuchSheet.A1\")"
+    },
+    "Dependencies": {
+      "A1": "5",
+      "B1": "=A1*2",
+      "C1": "=B1+1"
+    }
+  },
+  "expected": [
+    {
+      "sheet": "Basic",
+      "cell": "B1",
+      "type": "number",
+      "value": 60
+    },
+    {
+      "sheet": "Basic",
+      "cell": "B2",
+      "type": "number",
+      "value": 20
+    },
+    {
+      "sheet": "Basic",
+      "cell": "B3",
+      "type": "number",
+      "value": 3
+    },
+    {
+      "sheet": "Basic",
+      "cell": "C1",
+      "type": "number",
+      "value": 3
+    },
+    {
+      "sheet": "Basic",
+      "cell": "C2",
+      "type": "number",
+      "value": 20
+    },
+    {
+      "sheet": "CrossSheet",
+      "cell": "A1",
+      "type": "number",
+      "value": 350.5
+    },
+    {
+      "sheet": "CrossSheet",
+      "cell": "A2",
+      "type": "string",
+      "value": "Orange"
+    },
+    {
+      "sheet": "CrossSheet",
+      "cell": "A3",
+      "type": "string",
+      "value": "Orange"
+    },
+    {
+      "sheet": "CrossSheet",
+      "cell": "A4",
+      "type": "string",
+      "value": "Orange",
+      "requires_function_support": "XLOOKUP"
+    },
+    {
+      "sheet": "Errors",
+      "cell": "A1",
+      "type": "error",
+      "category": "DIV_ZERO"
+    },
+    {
+      "sheet": "Errors",
+      "cell": "A2",
+      "type": "error",
+      "category": "NUM"
+    },
+    {
+      "sheet": "Errors",
+      "cell": "A3",
+      "type": "error",
+      "category": "VALUE"
+    },
+    {
+      "sheet": "Errors",
+      "cell": "A4",
+      "type": "error",
+      "category": "REF"
+    },
+    {
+      "sheet": "Dependencies",
+      "cell": "C1",
+      "type": "number",
+      "value": 11
+    }
+  ],
+  "mutation_tests": [
+    {
+      "name": "dependency_recalculation",
+      "set": {
+        "sheet": "Dependencies",
+        "cell": "A1",
+        "value": "7"
+      },
+      "recalculate": "dirty",
+      "expected": [
+        {
+          "sheet": "Dependencies",
+          "cell": "B1",
+          "type": "number",
+          "value": 14
+        },
+        {
+          "sheet": "Dependencies",
+          "cell": "C1",
+          "type": "number",
+          "value": 15
+        }
+      ]
+    },
+    {
+      "name": "save_close_reopen",
+      "steps": [
+        "full_recalculate",
+        "save_xlsx",
+        "close_document",
+        "open_saved_xlsx_in_new_document",
+        "read_back_all_expected_cells"
+      ],
+      "must_preserve": [
+        "formula_text",
+        "typed_result",
+        "sheet_names",
+        "representative_cell_styles"
+      ]
+    }
+  ],
+  "device_acceptance": {
+    "required_abi": "arm64-v8a",
+    "require_actual_bundled_libreoffice_core": true,
+    "require_engine_identity": "LibreOffice Calc",
+    "require_no_poi_python_or_kotlin_formula_fallback": true,
+    "require_airplane_mode_test": true,
+    "require_logcat_native_initialization_evidence": true
+  }
+}
