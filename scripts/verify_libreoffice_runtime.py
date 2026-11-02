@@ -105,9 +105,9 @@ def main() -> int:
             errors.append("Native scheduleFormulaRecalculation is not routed through LibreOfficeServiceClient")
         if "PoiFormulaBridge.evaluate" in active_calc or "FormulaEngine(" in active_calc:
             errors.append("POI/Kotlin fallback evaluator is still present in the active Native formula path")
-        if re.search(r"\\bFormulaEngine\\s*\\(", main_source):
+        if re.search(r"\bFormulaEngine\s*\(", main_source):
             errors.append("Legacy local FormulaEngine implementation must not ship beside LibreOfficeKit")
-        if re.search(r"\\bFormulaEvaluator\\b", main_source):
+        if re.search(r"\bFormulaEvaluator\b", main_source):
             errors.append("Native MainActivity must not invoke Apache POI FormulaEvaluator")
         if "saveXlsxWithLibreOffice" not in main_source or "LibreOfficeServiceClient.recalculateFile" not in main_source:
             errors.append("Native XLSX Save path is not routed through LibreOffice")
