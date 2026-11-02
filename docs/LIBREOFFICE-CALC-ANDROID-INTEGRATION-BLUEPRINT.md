@@ -239,7 +239,21 @@ References:
 - `XFormulaParser` parses formula text to tokens and prints tokens back to formula text: https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1sheet_1_1XFormulaParser.html
 - Calc exposes Calc A1, Excel A1 and Excel R1C1 syntax options and configurable separators: https://help.libreoffice.org/latest/en-GB/text/shared/optionen/01060900.html
 
-## 13. Implementation sequence and stop/go criteria
+## 14. Reconciliation with earlier LibreOffice diagnostic artifacts
+
+Prior NiceExcel conversations contain additional diagnostics that are not part of the current tracked `main` tree:
+
+- A previous diagnostic recorded LibreOffice core source commit `6e0b39149b549bd05065d451006c4d060589891d`, ABI `arm64-v8a`, ELF64 AArch64, and 14 native libraries.
+- The native-core archive was previously reported as approximately 78.5 MB compressed; another diagnostic reported a 207 MB `liblo-native-code.so`. Treat these as historical artifact metadata, not proof that the files are present in this branch or are a matching, reproducible build.
+- Only a subset of the 14 library names is explicitly preserved in the available diagnostics: `liblo-native-code.so`, `libc++_shared.so`, `libnss3.so`, `libssl3.so`. Do not invent the other ten names; recover the original manifest/ZIP before packaging.
+- A separate build #42 APK was reported as 32.8 MB and explicitly logged that the LibreOffice native core was not present.
+- Runtime verification later failed because these files were missing: `fundamentalrc`, `bootstraprc`, `unorc`, `sofficerc`, `main.xcd`, and `registry_en-US.xcd`. The native artifact upload was skipped after that failure.
+- Another audit reported that the native-core ZIP did not contain the matching Java/JNI bootstrap classes or UNO/LibreOffice runtime assets, and that the existing probe only loaded .so files; a real recalculation adapter was not implemented.
+- A previous workflow used `native-engine/jniLibs/arm64-v8a/` as a staging location. The currently audited `app/build.gradle` does not declare that directory as a JNI source set. Android's default app JNI packaging path is `app/src/main/jniLibs`; if the staging directory is retained, Gradle must explicitly map it and CI must verify the final APK, not merely the staging folder.
+
+**Provenance action:** obtain the original native-core ZIP and diagnostics ZIP again (or their original workflow artifacts), extract the full manifest with SHA-256 hashes, verify the source commit and ABI, inspect ELF `DT_NEEDED`, and verify all six runtime configuration/registry files. The current diagnostics are incomplete, so this blueprint deliberately does not claim the old binary set is reusable.
+
+## 15. Implementation sequence and stop/go criteria
 
 **Milestone A — provenance and binary audit**
 - Obtain the user's earlier native-core and diagnostics archives or locate their exact repository artifacts.
