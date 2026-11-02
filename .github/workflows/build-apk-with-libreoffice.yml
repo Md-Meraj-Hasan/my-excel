@@ -284,7 +284,7 @@ jobs:
           $output = & $env:ANDROID_ADB shell am instrument -w -r com.meraj.niceexcel.test/androidx.test.runner.AndroidJUnitRunner 2>&1
           $output | Tee-Object -FilePath instrumentation-output.txt
           if ($LASTEXITCODE -ne 0 -or -not ($output -match "OK \(2 tests\)")) {
-            throw "LibreOffice Calc instrumentation tests did not report OK (4 tests)."
+            throw "LibreOffice Calc instrumentation tests did not report OK (2 tests)."
           }
 
       - name: Verify native Calc evidence and collect logcat
