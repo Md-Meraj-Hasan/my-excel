@@ -83,6 +83,23 @@ class MainActivity : Activity() {
         },
         ThreadPoolExecutor.AbortPolicy()
     )
+    // LibreOffice is a single-document native engine. Keep formula jobs serialized and
+    // coalesce queued recalculations so rapid edits cannot build an unbounded backlog.
+    private val formulaExecutor = ThreadPoolExecutor(
+        1, 1,
+        30L, TimeUnit.SECONDS,
+        ArrayBlockingQueue<Runnable>(1),
+        { runnable -> Thread(runnable, "NiceExcel-Formula-Calc").apply { isDaemon = true } },
+        ThreadPoolExecutor.DiscardOldestPolicy()
+    )
+    // Save jobs are not discardable: a user-requested save must either complete or report an error.
+    private val saveExecutor = ThreadPoolExecutor(
+        1, 1,
+        30L, TimeUnit.SECONDS,
+        ArrayBlockingQueue<Runnable>(2),
+        { runnable -> Thread(runnable, "NiceExcel-Workbook-Save").apply { isDaemon = true } },
+        ThreadPoolExecutor.AbortPolicy()
+    )
     private val mainHandler = Handler(Looper.getMainLooper())
     private val filterJobId = AtomicInteger(0)
     private val sortJobId = AtomicInteger(0)
@@ -1636,9 +1653,11 @@ class MainActivity : Activity() {
         val allSheetsSnapshot = sheets.mapValues { (_, cells) -> cells.toMap() }
         val stylesSnapshot = styles.mapValues { (_, map) -> map.toMap() }
         val allFormulas = allSheetsSnapshot.flatMap { (name, cells) ->
-            cells.filterValues { it.trimStart().startsWith("=") }.map { (address, raw) -> Triple(name, address, raw) }
+            cells.filterValues { it.trimStart().startsWith("=") }
+                .map { (address, raw) -> Triple(name, address, raw) }
         }
         if (allFormulas.isEmpty()) return
+
         val formulas = if (changedCells == null) {
             allFormulas
         } else {
@@ -1663,57 +1682,78 @@ class MainActivity : Activity() {
             allFormulas.filter { (name, address, _) -> "$name!$address" in affected }
         }
         if (formulas.isEmpty()) return
-        // Invalidate only results that will actually be recalculated. Cached values for
-        // unrelated formulas remain visible and are not needlessly refreshed.
+
         formulas.forEach { (formulaSheet, address, _) ->
             val prefix = "$formulaSheet|$address|"
             formulaDisplayCache.keys.removeAll { it.startsWith(prefix) }
         }
+
         try {
-            backgroundExecutor.execute {
-                val results = linkedMapOf<String, Pair<String, String>>()
-                formulas.forEach { (formulaSheet, address, raw) ->
-                    if (jobId != formulaRecalcJobId.get() || isFinishing || isDestroyed) return@forEach
-                    val st = stylesSnapshot[formulaSheet]?.get(address)
-                    val cacheKey = "$formulaSheet|$address|$raw|${st?.numberFormat ?: "General"}"
-                    val rendered = runCatching {
-                        val expression = raw.drop(1)
-                        val formulaCells = allSheetsSnapshot[formulaSheet].orEmpty()
-                        val localEngine = FormulaEngine(formulaCells)
-                        val preserveReferencedValue = shouldUseLocalReferenceResult(expression, formulaCells)
-                        val localSpecial = if (preserveReferencedValue || Regex("(?i)^(XOR|VLOOKUP|MATCH|NA|INDEX)\\s*\\(").containsMatchIn(expression))
-                            localEngine.evalText(expression) else null
-                        if (localSpecial != null) localSpecial else {
-                        val imported = PoiFormulaBridge.evaluate(allSheetsSnapshot, formulaSheet, address, expression)
-                        when {
-                            imported?.error == null && imported?.text != null -> imported.text
-                            imported?.error == null && imported?.number != null -> formatNumber(imported.number, st?.numberFormat ?: "General", imported.number.toString())
-                            else -> {
-                                val engine = FormulaEngine(allSheetsSnapshot[formulaSheet].orEmpty())
-                                val textResult = engine.evalText(raw.drop(1))
-                                textResult ?: engine.eval(raw.drop(1)).let { value ->
-                                    if (value.isNaN() || value.isInfinite()) "#NUM!" else formatNumber(value, st?.numberFormat ?: "General", value.toString())
-                                }
-                            }
-                        } ?: imported?.error ?: "#ERROR"
+            formulaExecutor.execute {
+                if (jobId != formulaRecalcJobId.get() || isFinishing || isDestroyed) return@execute
+                try {
+                    // One workbook-level Calc pass; never call POI or the local evaluator here.
+                    val calcResults = LibreOfficeServiceClient.recalculateSnapshot(
+                        this@MainActivity,
+                        allSheetsSnapshot
+                    )
+                    val missing = allFormulas.map { (name, address, _) ->
+                        "$name!${address.uppercase(Locale.US)}"
+                    }.filterNot { calcResults.containsKey(it) }
+                    check(missing.isEmpty()) {
+                        "LibreOffice returned ${calcResults.size}/${allFormulas.size} formula results; missing: ${missing.take(12)}"
+                    }
+
+                    val renderedResults = linkedMapOf<String, Pair<String, String>>()
+                    formulas.forEach { (formulaSheet, address, raw) ->
+                        if (jobId != formulaRecalcJobId.get() || isFinishing || isDestroyed) return@forEach
+                        val st = stylesSnapshot[formulaSheet]?.get(address)
+                        val cacheKey = "$formulaSheet|$address|$raw|${st?.numberFormat ?: "General"}"
+                        val key = "$formulaSheet!${address.uppercase(Locale.US)}"
+                        val calcValue = calcResults[key]
+                            ?: error("LibreOffice result missing for $key")
+                        val numeric = calcValue.toDoubleOrNull()
+                        val rendered = if (numeric != null) {
+                            formatNumber(numeric, st?.numberFormat ?: "General", calcValue)
+                        } else {
+                            calcValue
                         }
-                    }.getOrElse { error -> error.message?.takeIf { it.startsWith("#") } ?: "#ERROR" }
-                    results["$formulaSheet!$address"] = cacheKey to rendered
-                }
-                mainHandler.post {
-                    if (isFinishing || isDestroyed || jobId != formulaRecalcJobId.get() || revision != workbookRevision.get()) return@post
-                    results.forEach { (sheetAddress, result) ->
-                        val splitAt = sheetAddress.lastIndexOf('!')
-                        if (splitAt <= 0) return@forEach
-                        val formulaSheet = sheetAddress.substring(0, splitAt)
-                        val address = sheetAddress.substring(splitAt + 1)
-                        formulaDisplayCache[result.first] = result.second
-                        if (formulaSheet == sheetName) cellViews[address]?.text = result.second
+                        renderedResults["$formulaSheet!$address"] = cacheKey to rendered
+                    }
+
+                    mainHandler.post {
+                        if (isFinishing || isDestroyed || jobId != formulaRecalcJobId.get() ||
+                            revision != workbookRevision.get()) return@post
+                        renderedResults.forEach { (sheetAddress, result) ->
+                            val splitAt = sheetAddress.lastIndexOf('!')
+                            if (splitAt <= 0) return@forEach
+                            val formulaSheet = sheetAddress.substring(0, splitAt)
+                            val address = sheetAddress.substring(splitAt + 1)
+                            formulaDisplayCache[result.first] = result.second
+                            if (formulaSheet == sheetName) cellViews[address]?.text = result.second
+                        }
+                        Log.i(
+                            "NiceExcel-Formula",
+                            "LIBREOFFICE_CALC_SUCCESS formulas=${allFormulas.size} returned=${calcResults.size} affected=${renderedResults.size}"
+                        )
+                    }
+                } catch (failure: Throwable) {
+                    Log.e("NiceExcel-Formula", "LIBREOFFICE_CALC_FAILURE", failure)
+                    mainHandler.post {
+                        if (isFinishing || isDestroyed || jobId != formulaRecalcJobId.get() ||
+                            revision != workbookRevision.get()) return@post
+                        formulas.forEach { (formulaSheet, address, raw) ->
+                            val st = stylesSnapshot[formulaSheet]?.get(address)
+                            val cacheKey = "$formulaSheet|$address|$raw|${st?.numberFormat ?: "General"}"
+                            formulaDisplayCache[cacheKey] = "#ENGINE!"
+                            if (formulaSheet == sheetName) cellViews[address]?.text = "#ENGINE!"
+                        }
+                        status.text = "LibreOffice Calc error: ${failure.message ?: failure.javaClass.simpleName}"
                     }
                 }
             }
         } catch (_: RejectedExecutionException) {
-            // Never block typing if the bounded worker queue is full; a later edit can retry.
+            // The formula queue is shutting down; never run Calc on the UI thread.
         }
     }
 
@@ -2717,6 +2757,8 @@ class MainActivity : Activity() {
         sortJobId.incrementAndGet()
         formulaRecalcJobId.incrementAndGet()
         backgroundExecutor.shutdownNow()
+        formulaExecutor.shutdownNow()
+        saveExecutor.shutdownNow()
         super.onDestroy()
     }
     /**
@@ -2735,49 +2777,9 @@ class MainActivity : Activity() {
         return formulaDisplayCache[cacheKey] ?: "…"
     }
 
-    private fun display(address:String):String {
-        val raw=data[address] ?: return ""
-        val st = sheetStyles[address]
-        if (!raw.startsWith("=")) {
-            val n = raw.toDoubleOrNull()
-            return if (n != null && st != null) formatNumber(n, st.numberFormat, raw) else raw
-        }
-        val cacheKey = "$sheetName|$address|$raw|${st?.numberFormat ?: "General"}"
-        formulaDisplayCache[cacheKey]?.let { return it }
-        val result = try {
-            val expression = raw.drop(1)
-            // Keep local text/error semantics for XOR and VLOOKUP. POI may coerce
-            // Boolean/error results to numeric zero in this workbook bridge.
-            val localEngine = FormulaEngine(data)
-            // Only bypass POI for a direct reference when its source is a Boolean/error
-            // literal or a formula whose result needs local Boolean/error preservation.
-            // Numeric and ordinary text formulas must keep the established POI-first path.
-            val preserveReferencedValue = shouldUseLocalReferenceResult(expression, data)
-            val localSpecial = if (preserveReferencedValue || Regex("(?i)^(XOR|VLOOKUP|MATCH|NA|INDEX)\\s*\\(").containsMatchIn(expression))
-                localEngine.evalText(expression) else null
-            if (localSpecial != null) {
-                formulaDisplayCache[cacheKey] = localSpecial
-                return localSpecial
-            }
-            // Try Apache POI first for all other formulas to preserve existing coverage.
-            val imported = PoiFormulaBridge.evaluate(sheets, sheetName, address, expression)
-            when {
-                imported?.error == null && imported?.text != null -> imported.text
-                imported?.error == null && imported?.number != null -> formatNumber(imported.number, st?.numberFormat ?: "General", imported.number.toString())
-                else -> runCatching {
-                    val engine=FormulaEngine(data)
-                    val textResult = engine.evalText(expression)
-                    if (textResult != null) textResult
-                    else {
-                        val value=engine.eval(expression)
-                        if(value.isNaN()||value.isInfinite()) "#NUM!" else formatNumber(value, st?.numberFormat ?: "General", value.toString())
-                    }
-                }.getOrElse { error -> error.message?.takeIf { it.startsWith("#") } ?: imported?.error ?: "#ERROR" }
-            } ?: "#ERROR"
-        } catch(error:Exception) { error.message?.takeIf { it.startsWith("#") } ?: "#ERROR" }
-        formulaDisplayCache[cacheKey] = result
-        return result
-    }
+    // Legacy display helper is cache-only as well; no formula engine is called during rendering.
+    private fun display(address: String): String = displayForGrid(address)
+
     private fun formatNumber(value: Double, format: String, fallback: String): String = when (format) {
         "Number (2 decimals)" -> String.format(Locale.US, "%.2f", value)
         "Percentage" -> String.format(Locale.US, "%.2f%%", value * 100.0)
