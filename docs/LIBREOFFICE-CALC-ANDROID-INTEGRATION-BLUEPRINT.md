@@ -1,281 +1,259 @@
 # NiceExcel — LibreOffice Calc Android Integration Blueprint
 
-**Branch:** `feature/libreoffice-calc-runtime-blueprint`  
-**Audited base:** `main` (repository tree and source files inspected before this branch)  
-**Status:** Design and runtime contract only. No LibreOffice native runtime is currently integrated.
+**Target repository:** `Md-Meraj-Hasan/my-excel`  
+**Working branch:** `feature/libreoffice-calc-runtime-blueprint`  
+**Reference implementation repository:** `Md-Meraj-Hasan/Nice-Excel`  
+**Status:** Runtime artifacts recovered and verified; implementation port and real-device formula acceptance remain outstanding.
 
-## 1. Executive decision
+## 1. Final architecture decision
 
-Target architecture for the existing Native Kotlin grid:
+For the existing Native Kotlin grid, the best first integration is **official LibreOfficeKit (LOK) Java/JNI bootstrap + Calc UNO command dispatch + XLSX round-trip**. A custom C++ UNO JNI bridge is not needed for the initial calculation workflow.
 
-- Bundle a reproducible, ARM64-first LibreOffice Android core built from the official LibreOffice source.
-- Use LibreOfficeKit (LOK) for document lifecycle, import/export, and optional rendering/event integration.
-- Add a small JNI adapter compiled and linked into the LibreOffice Android native build. The adapter must use the Calc/UNO C++ document model to expose typed cell/formula operations and recalculation.
-- Keep Kotlin as the UI and workbook-session owner. All native calls run on one serialized engine worker, never the Android main thread.
-- Do not use a desktop UNO Java bridge JAR or a separate `soffice` process as a shortcut. The Android build uses a specially linked native core; a Maven dependency cannot supply it.
-- Keep Apache POI, Python and the Kotlin evaluator out of the active calculation path after the native engine passes acceptance tests. Retain POI only for explicitly assigned non-calculation file utilities if needed.
+Flow:
 
-**Important API boundary:** LOK and UNO are not interchangeable. LOK exposes a C/C++ document API and command interface; the public LOK documentation describes document conversion and experimental tiled rendering. The UNO Calc interfaces provide richer typed spreadsheet operations such as `XCalculatable.calculateAll()`, `XCell.getFormula()`, `XCell.getValue()`, and range operations. The proposed JNI adapter therefore needs a Calc/UNO C++ implementation inside the LibreOffice native build; do not assume LOK alone exposes every cell-level method required by NiceExcel.
+1. NiceExcel snapshots the current multi-sheet cell model to a temporary XLSX workbook using Apache POI's OOXML writer. POI writes formulas; it does not calculate them.
+2. The snapshot file path is sent to an isolated Android service process (`:libreoffice`) using Messenger/Binder. The file stays in the same app sandbox; do not send a large workbook through a Bundle.
+3. Inside that process, a single dedicated LOK thread loads the XLSX through official `LibreOfficeKit` / `Office.documentLoad()`.
+4. The loaded document must be a spreadsheet (`DOCTYPE_SPREADSHEET`).
+5. The adapter posts `.uno:CalculateHard` with `notifyWhenFinished=true`, listens for `CALLBACK_UNO_COMMAND_RESULT`, and waits for an explicit successful completion before saving.
+6. The document is saved with the `Calc MS Excel 2007 XML` filter, destroyed, and the saved XLSX is opened again in a fresh LOK document.
+7. Apache POI reads only the formula cached values from the Calc-produced XLSX. It is not used to evaluate formulas.
+8. Kotlin applies the returned results to `formulaDisplayCache` using the workbook revision token. Rendering remains a pure cache lookup.
+9. The real XLSX Save path must also pass the user's actual workbook through Calc before the final file is delivered.
+
+This makes **LibreOffice Calc the actual calculation engine** while preserving NiceExcel's existing Native grid. It is much smaller and safer than embedding a second custom UNO bridge into LibreOffice's C++ build.
+
+### Why LOK + UNO command dispatch is enough initially
+
+- `Document.postUnoCommand()` is a supported LOK API. The `notifyWhenFinished` flag requests `LOK_CALLBACK_UNO_COMMAND_RESULT`, whose JSON payload includes the command name and success status.
+- `.uno:CalculateHard` invokes Calc's full recalculation command.
+- The saved XLSX formula caches are read back by POI. A POI read of cached results is not a POI formula evaluation.
+- If later NiceExcel needs direct typed cell access without an XLSX round-trip, add a dedicated C++ UNO bridge using `XCalculatable`, `XCell`, `XCellRangeData`, etc. That is a later optimization, not a prerequisite for proving Calc calculation.
 
 Official references:
-- https://docs.libreoffice.org/android.html
-- https://docs.libreoffice.org/libreofficekit.html
-- https://github.com/LibreOffice/core/blob/master/android/README.md
-- https://github.com/LibreOffice/core/blob/master/README.cross
-- https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1sheet_1_1XCalculatable.html
-- https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1table_1_1XCell.html
+- Android LOK bootstrap and threading: https://docs.libreoffice.org/android.html
+- LOK API and `postUnoCommand`: https://docs.libreoffice.org/libreofficekit.html
+- LOK C++ API: https://github.com/LibreOffice/core/blob/master/include/LibreOfficeKit/LibreOfficeKit.hxx
+- UNO command completion callback: https://github.com/LibreOffice/core/blob/master/include/LibreOfficeKit/LibreOfficeKitEnums.h
+- UNO Calc recalculation interface (optional direct bridge): https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1sheet_1_1XCalculatable.html
+- UNO cell interface (optional direct bridge): https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1table_1_1XCell.html
 
-## 2. Existing repository audit
+## 2. Repository comparison and recovered implementation
 
-Inspected current `main` source tree and these files:
-- `app/build.gradle`
-- `build.gradle`, `settings.gradle`, `gradle.properties`
-- `app/src/main/AndroidManifest.xml`
-- `app/src/main/java/com/meraj/niceexcel/MainActivity.kt`
-- `PoiFormulaBridge.kt`, `XlsxCodec.kt`
-- Kotlin formula tests and `XlsxCodecRoundTripTest.kt`
-- `.github/workflows/build-apk.yml`
-- `LIBREOFFICEKIT-POC-NEXT-STEPS.md`
+Two repositories exist and must not be confused:
 
-Findings:
-1. `MainActivity.kt` owns the existing Native grid and currently references POI/fallback formula calculation paths and a formula display cache.
-2. `PoiFormulaBridge.kt` creates an in-memory HSSF workbook to evaluate formulas; it is not LibreOffice.
-3. `XlsxCodec.kt` is a lightweight OOXML codec and explicitly does not preserve every Excel feature. It stores formula strings but does not itself calculate them or write verified formula cached results.
-4. `app/build.gradle` has Apache POI 5.4.1 and Chaquopy 16.1.0 / Python 3.11. The configured ABI filters currently include `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
-5. The app uses AGP 8.9.2, Kotlin 2.1.10, Java 17, compileSdk 35; CI uses Gradle 8.11.1.
-6. The tracked tree has no `app/src/main/cpp`, `app/src/main/jniLibs`, `liblo-native-code.so`, official LOK bootstrap Java package, or LO runtime asset tree.
-7. The tracked Android manifest requests INTERNET and cleartext traffic for the existing Flask/WebView feature. This is separate from the calculation engine; the Calc engine itself must work offline.
-8. `LIBREOFFICEKIT-POC-NEXT-STEPS.md` already states that the native core is not integrated.
+- Target for this work: https://github.com/Md-Meraj-Hasan/my-excel
+- Older LibreOffice integration reference: https://github.com/Md-Meraj-Hasan/Nice-Excel
 
-This is a source-tree audit, not an inspection of any untracked local files or the previously supplied diagnostic ZIPs. Reconcile those archives against the file manifest before selecting binaries.
+The target `my-excel/main` currently contains the Native Kotlin grid, `PoiFormulaBridge.kt`, `XlsxCodec.kt`, and its regular build workflow, but does not contain the LOK Java bootstrap, LOK engine adapter, isolated service, or LibreOffice packaging workflows.
 
-## 3. Architecture and call flow
+The older `Nice-Excel` repository contains these reusable reference files:
+- `app/src/main/java/org/libreoffice/kit/LibreOfficeKit.java`
+- `app/src/main/java/org/libreoffice/kit/Office.java`
+- `app/src/main/java/org/libreoffice/kit/Document.java`
+- `app/src/main/java/org/libreoffice/kit/DirectBufferAllocator.java`
+- `app/src/main/java/com/meraj/niceexcel/LibreOfficeCalcEngine.kt`
+- `app/src/main/java/com/meraj/niceexcel/LibreOfficeEngineService.java`
+- `app/src/main/java/com/meraj/niceexcel/LibreOfficeServiceClient.kt`
+- `native-engine/scripts/build-libreoffice-android-arm64.sh`
+- `native-engine/scripts/check-arm64-core.sh`
+- `native-engine/scripts/check-native-dependency-closure.sh`
+- `native-engine/scripts/check-apk-libreoffice.sh`
+- `.github/workflows/build-libreoffice-arm64.yml`
+- `.github/workflows/build-apk-with-libreoffice.yml`
+- `.github/workflows/verify-libreoffice-apk.yml`
+
+These files are a reference implementation, not yet a verified drop-in patch for `my-excel`. The existing target `MainActivity.kt`, manifest, Gradle configuration, and save path must be adapted rather than replaced wholesale.
+
+## 3. Native-core artifact inspection — verified
+
+Recovered the actual GitHub Actions artifacts from old repository workflow run **41280547094**:
+
+- Native core artifact ID: `13076063462`, ZIP size 82,322,712 bytes.
+- Runtime assets artifact ID: `13076337479`, ZIP size 6,491,634 bytes.
+- Diagnostics artifact ID: `13076680937`.
+- LibreOffice source commit: `6e0b39149b549bd05065d451006c4d060589891d`.
+- Android NDK: `27.2.12479018`.
+- Android API target used by LO configure: 21.
+- ABI: `arm64-v8a`.
+
+I downloaded and inspected both ZIPs in this session:
+- Both ZIP archives pass CRC/integrity checks.
+- Native archive contains exactly 14 shared libraries.
+- Every one of the 14 libraries is ELF64, machine ID 183 (AArch64).
+- `liblo-native-code.so` is 207,175,976 bytes.
+- The total uncompressed size of the 14 native libraries is 215,690,096 bytes.
+- `readelf -d` dependency closure was checked for all 14 libraries. All non-platform dependencies resolve inside the same archive; no missing dependency was found.
+- SHA-256 values for all 14 libraries are recorded in `native/libreoffice/runtime-manifest.json`.
+
+### Exact 14 native libraries
 
 ```text
-Native Kotlin grid / formula bar
-        |
-        v
-LibreOfficeCalcEngine (Kotlin facade; explicit engine state)
-        |
-        v
-Single-threaded CalcEngineExecutor (serialized commands)
-        |
-        v
-JNI adapter (small stable API; no UI objects cross JNI)
-        |
-        v
-LibreOffice Android native core: liblo-native-code.so
-  - LOK document lifecycle / import-export
-  - Calc document model and UNO C++ interfaces
-  - Calc formula parser, dependency graph, recalculation
-        |
-        v
-Workbook document in private app storage
+libc++_shared.so
+libfreebl3.so
+liblo-native-code.so
+libnspr4.so
+libnss3.so
+libnssckbi.so
+libnssdbm3.so
+libnssutil3.so
+libplc4.so
+libplds4.so
+libsmime3.so
+libsoftokn3.so
+libsqlite3.so
+libssl3.so
 ```
 
-The native adapter should expose a narrow versioned contract, not leak UNO pointers into Kotlin:
+The source manifest and binary hashes match the historical build manifest. This is a real native core, not a placeholder or a library-count-only check.
 
-- `nativeGetVersion()`
-- `nativeInitialize(appDataDir, cacheDir, apkPath, assetManager)`
-- `nativeOpenWorkbook(inputPath, readOnly)` -> document handle
-- `nativeGetSheetNames(handle)`
-- `nativeSetCellFormula(handle, sheet, address, formula)`
-- `nativeSetCellValue(handle, sheet, address, typedValue)`
-- `nativeGetCellSnapshot(handle, sheet, address)` -> formula, value type, value, display text, error code
-- `nativeSetCellRange(...)` / `nativeGetCellRange(...)` for batch operations
-- `nativeCalculate(handle, mode)` -> calculation status and changed-cell summary
-- `nativeSaveAs(handle, outputPath, format)`
-- `nativeCloseWorkbook(handle)`
-- `nativeShutdown()`
+## 4. Runtime assets — recovered, with an APK packaging constraint
 
-The exact JNI signatures must be fixed in a versioned interface header and mirrored in Kotlin. All calls must return structured status/error values; no swallowed exceptions or fallback-to-POI behavior.
+The runtime ZIP contains 78 entries (16,737,097 bytes uncompressed). The two `assets_strippedUI/share/registry` entries must be merged into the final app's `assets/share/registry` tree.
 
-## 4. Required native source and runtime inventory
+Required final APK asset paths:
 
-**Build-system correction:** do not assume that adding `externalNativeBuild { cmake }` to the Android app can produce the LibreOffice core. The official Android build combines the needed LibreOffice/UNO static archives and app-specific native code into the LO Android shared library. NiceExcel's JNI adapter must be compiled as part of that same LibreOffice core build (or a verified equivalent fork/overlay), then the resulting ABI-matched library is packaged by the Android app.
+```text
+assets/program/fundamentalrc
+assets/program/bootstraprc
+assets/program/unorc
+assets/program/services.rdb
+assets/unpack/program/sofficerc
+assets/unpack/program/udkapi.rdb
+assets/unpack/program/offapi.rdb
+assets/unpack/program/oovbaapi.rdb
+assets/unpack/etc/fonts/fonts.conf
+assets/share/registry/main.xcd
+assets/share/registry/res/registry_en-US.xcd
+```
 
-### A. Source/build inputs (must be pinned)
-- Official LibreOffice core source commit/tag and its license notices.
-- LibreOffice Android bootstrap sources from `android/Bootstrap` (including LOK Java/JNI bootstrap classes and supporting event/thread classes actually used).
-- LibreOffice Android build configuration: `android/Module_android.mk`, `android/CustomTarget_lo_android.mk`, `sal/android/lo-bootstrap.c`, and `solenv/bin/native-code.py` service/constructor registration as appropriate for the selected source revision.
-- JNI adapter C++ source and public header owned by NiceExcel, plus a reproducible patch/overlay that integrates it into the official LibreOffice Android gbuild target.
-- NDK and SDK versions matching the selected LibreOffice source revision. The official LibreOffice Android core is built through LibreOffice's own cross-build/gbuild system; a standalone app-level CMake build is not a substitute for linking the bridge into the monolithic LO core.
-- Reproducible build script, checksums, build logs and SBOM/license inventory.
+All 11 required files were found in the recovered runtime artifact after applying the documented merge of `assets` and `assets_strippedUI`.
 
-### B. ARM64 APK payload (must be proven from a real built artifact)
-- `lib/arm64-v8a/liblo-native-code.so` — mandatory core; not interchangeable with generic desktop LibreOffice .so files.
-- Any separately loaded Android dependencies required by the selected official build (for example the exact NSPR/NSS and C++ runtime libraries indicated by that build's loader). Do not copy a library list from another LibreOffice version without checking ELF DT_NEEDED and the official loader.
-- LibreOffice runtime assets/configuration required by that exact build, including its generated program/registry/configuration/resource payload.
-- Bootstrap classes and native method declarations compiled into DEX.
-- MPL-2.0 and third-party notices, plus source/build provenance.
-- Fonts, filters, dictionaries or other optional resources only when required by the selected Calc functionality; record each as required/optional.
+**Critical:** the runtime artifact ZIP itself compresses its entries; that is acceptable. However, LibreOffice's Android APK virtual filesystem reads its packaged asset entries as ZIP STORE/uncompressed. The final APK must therefore package every `assets/` file uncompressed. The older reference Gradle configuration uses:
 
-**Do not** package the 14 .so / 79 runtime files from an earlier diagnostic ZIP until their source revision, ABI, ELF dependencies, checksums, licensing, and matching bootstrap/runtime layout are verified. File count alone is not evidence of a working runtime.
+```groovy
+android {
+    androidResources {
+        noCompress += ""
+    }
+}
+```
 
-### C. ABI policy
-Start with `arm64-v8a` only. Do not advertise `armeabi-v7a` or `x86_64` until each has its own matching native core and passes the same device tests. A Gradle ABI filter does not create a native binary.
+The APK verification script must reject any compressed `assets/` entry. Merely finding the files in the source tree is not enough.
 
-### D. Android bootstrap requirements
-Follow the official Android bootstrap flow for the selected LO revision: load the correct native dependencies in the required order, initialize native code with app data/cache/APK paths and AssetManager, prepare the LO profile/runtime directories, then create/open the LOK/Calc document on the engine worker. Verify every JNI symbol and required UNO service at runtime. Treat missing services as a hard initialization failure.
+## 5. Existing implementation issues that must be corrected before porting
 
-## 5. Engine ownership and default-engine rules
+The older `Nice-Excel` reference code is useful but must not be copied unchanged:
 
-Introduce an explicit state machine:
+1. **LOK thread affinity:** `LibreOfficeEngineService.handleRequest()` currently calls `LibreOfficeKit.init()` on the service executor, while `LibreOfficeCalcEngine` later creates/uses the LOK `Office` on its own `loThread`. Move all LOK initialization, handle creation, document load, command dispatch, save, document destroy and office shutdown onto one single LOK worker thread in the isolated process.
+2. **Calculation completion race:** the reference calls `postUnoCommand(".uno:CalculateHard", "{}", false)` and immediately saves. Change to `notifyWhenFinished=true`; register `Document.MessageCallback`; wait for `CALLBACK_UNO_COMMAND_RESULT`; parse the JSON; require the matching command name and `success=true` before save.
+3. **Service cleanup:** close the document in `finally`; close/destroy the Office handle on the same LOK thread when the service shuts down. Never leave native handles alive after unbind/process teardown.
+4. **Fallback behavior:** the old reference falls back to POI/Kotlin when LibreOffice fails. The target requirement is Calc as the default engine. Once the runtime is enabled, a Calc initialization/calculation failure must be surfaced as an engine error; do not silently present POI/Kotlin results as if Calc produced them. Keep old evaluators only behind an explicit temporary diagnostic/developer switch until device acceptance is complete.
+5. **MainActivity path:** the current target `my-excel` has a POI/Kotlin evaluation loop in `scheduleFormulaRecalculation()`. The older reference's MainActivity already calls the LOK service first, but then falls back. Port only the service-first batching idea and remove fallback from the production calculation path after the Calc tests pass.
+6. **UI thread:** the target's `displayForGrid()` already reads `formulaDisplayCache` and shows a pending marker. Preserve that. The old `display()` helper still contains synchronous POI/local evaluation logic; it is unused in the current target grid call sites and should be made cache-only or removed so it cannot become an accidental alternate path.
+7. **Concurrency:** the target has a four-worker background pool for general operations. Add a dedicated single-thread/coalescing formula queue. One workbook/document must never be called concurrently from multiple workers. Discard stale results using the existing job ID and workbook revision.
+8. **Snapshot vs Save:** the temporary calculation snapshot may be generated from the in-memory sheet maps. The user's real XLSX Save path must instead send the original exported workbook through Calc, save to a separate temporary output, verify/reopen it, and only then copy it to the selected destination. Do not rebuild the user's full styled workbook from a value-only snapshot.
+9. **Result completeness:** compare the number and addresses of formula cells expected with the formula result cache returned by Calc. Missing result cells are a hard engine failure, not a reason to fall back to another evaluator.
+10. **XLSX formula caches:** POI may read cached formula results from Calc's saved XLSX. It must not call a POI evaluator in this path. Error values must remain typed errors, never become numeric zero or blank.
 
-`UNAVAILABLE -> INITIALIZING -> READY -> DOCUMENT_OPEN -> CALCULATING -> DOCUMENT_OPEN`
+## 6. Target repository changes required
 
-Any unrecoverable native error transitions to `FAILED`. The UI must show an engine error and must not silently calculate with POI, Python or Kotlin.
+### Source files to port/adapt
 
-Default-engine enforcement:
-1. Native engine readiness is required before formula calculation or workbook editing that requires recalculation.
-2. Formula writes go to the Calc document first; display values are read back from Calc.
-3. Automatic calculation is enabled; explicit full recalculation invokes UNO `XCalculatable.calculateAll()`.
-4. Save waits for pending edits and calculation, then saves through the LO document/filter path.
-5. Reopen the saved file in a fresh engine document and verify formulas and results.
-6. Formula errors are returned as typed error values, not converted to zero or empty strings.
-7. Batch edits are applied in order on the one engine worker; UI updates are posted to main thread only after completion.
-8. No native document pointer is used after close; every open handle has deterministic cleanup.
+- Official LOK bootstrap: `LibreOfficeKit.java`, `Office.java`, `Document.java`, `DirectBufferAllocator.java` from the same LibreOffice commit as the native core. Retain MPL-2.0 notices.
+- Kotlin engine adapter: adapted `LibreOfficeCalcEngine.kt` with a single LOK worker, initialization on that worker, callback-based hard-recalc completion, save/reopen verification, cache extraction, and deterministic shutdown.
+- Isolated process service: adapted `LibreOfficeEngineService.java`.
+- File-based service client: adapted `LibreOfficeServiceClient.kt`; pass private file paths over Binder, not large serialized workbook maps.
+- Register service in `AndroidManifest.xml` with `android:process=":libreoffice"` and `android:exported="false"`.
+- In `app/build.gradle`: map `native-engine/jniLibs` as the app JNI source set; add `poi-ooxml:5.4.1` for snapshot writing/cache reading; set all LibreOffice assets to no-compress; add verification tasks.
+- Keep the existing Native UI, keyboard/touch handling, grid, ribbon and sheet model.
 
-## 6. Workbook bridge strategy
+### Native artifact and asset staging
 
-Do not make the lightweight `XlsxCodec` the authoritative save path for workbooks calculated by LibreOffice. Its current implementation writes formula XML without verified cached calculation results and supports only a subset of OOXML features.
+The 207 MB native core must not be committed as a source file. Port the reference build workflow so that:
+- the native build job checks out the exact LO commit and NDK;
+- it builds ARM64 using the dedicated `LibreOfficeAndroidAarch64` distro config (not the 32-bit `LibreOfficeAndroid` config);
+- it verifies configure selected `aarch64-linux-android` before the expensive build;
+- it uploads the 14 matching native libraries and runtime assets from the same workflow run;
+- the APK workflow downloads both artifacts from that exact run ID, stages them, and verifies the final APK.
 
-Preferred flow:
-- Import original XLSX into the LO Calc document.
-- Keep the LO document as the authoritative live workbook during the session.
-- Read/write cell values and formulas via the native adapter.
-- Save/export with LibreOffice's XLSX filter after recalculation.
-- Reopen the exported XLSX with a fresh LO document and validate results.
+The reference native build script explicitly guards against the previous failure where configure silently selected `armv7a` because a later `--host=arm-linux-androideabi` overrode the intended AArch64 host. Keep that guard.
 
-The existing codec may remain for CSV/simple formats or explicitly limited fallback utilities, but not as a silent post-save rewrite of an LO-calculated workbook.
+## 7. MainActivity integration contract
 
-## 7. Automated verification: required test layers
+Current target code:
+- `scheduleFormulaRecalculation()` snapshots all sheets, identifies formula cells and affected dependents, then calls POI/Kotlin formula evaluators on a general worker.
+- `displayForGrid()` is already cache-only and must remain so.
+- Existing `formulaDisplayCache`, `formulaRecalcJobId`, and `workbookRevision` are useful and should be retained.
 
-### Layer 1 — Build/package gate (every native-runtime PR)
-- Build APK for ARM64.
-- Inspect APK ZIP contents; require the expected core library, bootstrap classes, runtime assets and license notices.
-- Parse ELF headers: require AArch64 machine type for ARM64 core.
-- Inspect dynamic dependencies and fail for unresolved/missing packaged dependencies.
-- Verify the app's runtime manifest version matches the JNI adapter's expected ABI/API version.
-- Reject empty/truncated native libraries and unexpected duplicate ABI payloads.
+New flow:
+1. Capture the workbook snapshot and expected formula address set.
+2. Enqueue a single latest-wins formula job off the UI thread.
+3. Build one temporary XLSX snapshot for the entire workbook.
+4. Ask `LibreOfficeServiceClient` to recalculate it in the isolated service.
+5. Require one returned cached result for every formula cell in the snapshot.
+6. Normalize result types: number, text, boolean, and Excel error. Apply existing number formatting in Kotlin only to numeric display values.
+7. Post results to the UI only if job ID and workbook revision still match.
+8. On any engine failure, show `#ENGINE!`/a clear status and log the exact LO error. Do not show a POI/Kotlin value as a Calc result.
+9. On Save, use the same LOK worker to recalculate the actual XLSX export and save a verified Calc-produced XLSX before committing it to the user's destination.
 
-### Layer 2 — Device instrumentation gate (emulator and physical ARM64)
-Must run on a real ARM64 Android phone before release. Emulator is useful but is not a substitute for physical-device acceptance.
+## 8. Formula verification suite
 
-Instrumentation must initialize the actual bundled core, load a workbook, execute formulas, save, close, reopen, and re-read results. The test must assert the engine identity is LibreOffice and assert no POI/Python fallback invocation occurred.
+Fixture: `testdata/libreoffice/formula-cases.json`. It defines Excel-English/A1 formula inputs and expected typed outputs.
 
-### Layer 3 — Formula correctness suite
-Use a deterministic workbook with these sheets and expected results:
-- `Basic`: `=1+2` -> 3; `=SUM(A1:A3)`; `=AVERAGE(A1:A3)`; `=COUNT(A1:A3)`
-- `Lookup`: exact `VLOOKUP`, `INDEX/MATCH`, `XLOOKUP` where supported by selected Calc version; test missing key returns the expected not-found value/error.
-- `CrossSheet`: `=SUM('Sales Data'.B2:B4)` and quoted sheet names.
-- `Dependencies`: chained formulas; edit an input and verify dependent cells update.
-- `Errors`: `=1/0`, `=SQRT(-1)`, `=VALUE("abc")`, invalid reference; assert typed errors, never zero/blank.
-- `DatesText`: date/time, locale-sensitive separators, text functions and formatting.
-- `Cycles`: circular reference; assert controlled Calc error/no hang.
-- `SaveReopen`: verify formula strings, cached/display values, sheet names and representative styles after export and fresh reopen.
+Required test groups:
+- Basic math and aggregates: `=1+2`, `SUM`, `AVERAGE`, `COUNT`.
+- Lookup: exact `VLOOKUP`, `INDEX/MATCH`, `XLOOKUP` (record unsupported-version behavior explicitly).
+- Cross-sheet formulas with quoted sheet names.
+- Dependency recalculation after editing an input.
+- Errors: `=1/0`, `=SQRT(-1)`, `=VALUE("abc")`, invalid reference.
+- Text, boolean, date/time and number formatting.
+- Save XLSX, close document, reopen a fresh LOK document, and compare formulas and cached results.
+- Repeated open/calculate/save/close cycles and rapid cell edits.
 
-Compare numeric results with tolerance; compare text, booleans and error codes exactly. Record Calc version, device model, Android version, ABI, elapsed time, peak memory, and logcat.
+UNO formula grammar note: if a future direct UNO bridge uses `XCell.setFormula()`, do not pass arbitrary locale-specific formula bar strings without parsing. Its API formula grammar is English/A1; use the UNO formula parser to translate rather than replacing commas, semicolons or sheet separators with string operations.
 
-### Layer 4 — Stress/lifecycle
-- 500 sequential cell edits with formula dependents.
-- 100 repeated open/recalculate/save/close cycles.
-- background/foreground during calculation.
-- Back navigation during edit/IME dismissal.
-- low-memory/process recreation behavior.
-- no UI-thread blocking, native crash, leaked document handles, or stale result commits.
+## 9. CI and device verification
 
-## 8. Current missing-file matrix
+### GitHub Actions package gate
+The new `.github/workflows/libreoffice-runtime-gate.yml`:
+- runs JVM unit tests and validates the formula fixture structure;
+- builds the debug APK;
+- checks all 14 ARM64 native libraries and their ELF machine IDs;
+- checks the runtime asset paths, uncompressed ZIP STORE requirement and historical SHA-256 values;
+- checks the bootstrap class is compiled into DEX;
+- checks non-platform `DT_NEEDED` dependencies are packaged.
 
-| Required item | Current repository audit |
-|---|---|
-| `liblo-native-code.so` ARM64 | Missing |
-| Matching LO native dependency set | Missing / unverified |
-| Official Android LOK bootstrap Java sources | Missing |
-| NiceExcel JNI adapter C++ source | Missing |
-| LibreOffice gbuild/native bridge integration patch | Missing |
-| LO runtime assets / registry payload | Missing |
-| Native service registration manifest | Missing |
-| Runtime/API version contract | Missing |
-| Real Calc instrumentation tests | Missing |
-| Formula verification workbook / fixture | Not found in tracked app test assets |
-| License/provenance/SBOM for bundled LO core | Missing |
+A passing package gate proves only that the matching runtime was packaged. It does not prove native initialization or formula correctness.
 
-## 10. Exact MainActivity migration points discovered
+### Instrumentation and real phone acceptance
+Add an Android instrumentation test that calls the actual isolated service and asserts the exact formula outputs from the fixture, including error types, cross-sheet references, dependency updates, and save/reopen. Run this test on a real ARM64 Android phone before release. Emulator tests are useful but do not replace physical-device acceptance.
 
-A full fetch of the current 3,351-line `MainActivity.kt` confirms two active calculation paths, not one:
+Capture:
+- device model, Android version and ABI;
+- LO source commit and native library hashes;
+- logcat lines for native initialization, document load, CalculateHard callback success, save and reopen;
+- formula result comparison report;
+- memory, elapsed time and crash/ANR status.
 
-- `scheduleFormulaRecalculation()` around lines 1,660–1,710: snapshots workbook maps, evaluates formulas on the background executor, currently tries local special cases, then `PoiFormulaBridge.evaluate(...)`, then `FormulaEngine`, and commits results into `formulaDisplayCache`.
-- `display(address)` around lines 2,735–2,780: synchronously tries local formula evaluation, then `PoiFormulaBridge.evaluate(sheets, sheetName, address, expression)`, then Kotlin `FormulaEngine`. This can be reached from rendering and must not become a synchronous JNI/Calc call.
-- `formulaDisplayCache` is invalidated at many mutation points and currently keys rendered values by sheet/address/formula/number format.
+**Release GO criteria:** all package checks pass; the real phone initializes the bundled core; Calc reports successful hard recalculation; every expected formula result matches; save/reopen passes; no POI/Kotlin fallback is invoked; no UI-thread calculation or crash occurs.
 
-Required migration:
-1. Introduce one workbook-scoped Calc document session; do not create a temporary Calc document for each formula cell.
-2. On import/open, create the LO document and hydrate the existing UI's cell snapshot from the authoritative Calc workbook.
-3. On cell edit/paste/fill/sort/sheet operation, enqueue a revision-tagged batch update to the single Calc worker.
-4. Recalculate once per committed batch (dirty calculation by default; explicit full calculation for open/refresh/verification).
-5. Return a revision-tagged batch of formula result snapshots; discard stale responses if the UI workbook revision has advanced.
-6. Replace the POI/Kotlin evaluator branch in `scheduleFormulaRecalculation()` with the engine service.
-7. Change `display(address)` to a pure cache lookup for formula cells (show a pending marker while a Calc result is pending). It must never call JNI or calculate formulas.
-8. Keep number-format rendering in Kotlin only if it does not alter the stored Calc value; otherwise request formatted display text from Calc.
-9. Save/export from the LO document, not by rewriting it through the current limited `XlsxCodec`.
-10. Add a guard test that fails if `PoiFormulaBridge.evaluate` or `FormulaEngine.eval` is reached from the Native UI's active production formula path after migration.
+## 10. Current status and next steps
 
-The existing `backgroundExecutor` has four workers. LibreOffice document handles must not be concurrently accessed by four workers: use a dedicated single-thread executor for every call into one LO document, with explicit queue/back-pressure and revision cancellation. The existing general executor can continue to handle independent non-LO operations.
+Completed in this work branch:
+- created a separate development branch;
+- inspected the target `my-excel` source and its formula call paths;
+- compared the older `Nice-Excel` reference implementation;
+- recovered and inspected the actual ARM64 native-core and runtime-assets artifacts from run 41280547094;
+- verified all 14 native libraries are ELF64 AArch64 and checked their dependency closure;
+- recorded the native hashes, source commit, NDK and required runtime paths in `native/libreoffice/runtime-manifest.json`;
+- added formula test vectors, fixture validation and a strict APK runtime audit workflow.
 
-## 12. Formula language and reference grammar (must be tested explicitly)
+Not yet completed:
+- port the official LOK bootstrap and engine/service code into the target repo;
+- correct the LOK worker-thread and command-completion issues;
+- connect the target `MainActivity` formula pipeline and Save path;
+- stage the two recovered artifacts through the APK workflow;
+- run a real Android ARM64 device formula test.
 
-The UNO `XCell.setFormula()` API does **not** promise to accept arbitrary locale-specific UI formula text. The official API reference specifies **API English with A1 reference style grammar**. Calc's user-facing formula syntax can vary by locale and by selected Calc/Excel reference convention; sheet references can differ between Calc A1 and Excel A1, and function argument separators are configurable.
-
-Implementation rules:
-- Define the NiceExcel formula-bar input contract as Excel-English/A1 (the user-facing syntax already used by the app), then parse/translate it through LibreOffice's formula parser/grammar APIs into the UNO API formula representation.
-- Do not perform global comma/semicolon or `!`/`.` string replacement: quoted text, array constants, sheet names and nested formulas make naive rewriting unsafe.
-- Read back the formula through UNO and convert it to the NiceExcel display/input grammar using the same parser/token representation.
-- On XLSX import, let LibreOffice's XLSX filter translate the file formulas; do not reparse raw OOXML formulas with the Kotlin evaluator.
-- Include grammar conformance tests for quoted sheet names, absolute references, named ranges, function argument separators, arrays, localized decimal settings and formulas containing commas/semicolons inside quoted text.
-
-References:
-- UNO `XCell.setFormula()` requires API English with A1 reference grammar: https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1table_1_1XCell.html
-- `XFormulaParser` parses formula text to tokens and prints tokens back to formula text: https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1sheet_1_1XFormulaParser.html
-- Calc exposes Calc A1, Excel A1 and Excel R1C1 syntax options and configurable separators: https://help.libreoffice.org/latest/en-GB/text/shared/optionen/01060900.html
-
-## 14. Reconciliation with earlier LibreOffice diagnostic artifacts
-
-Prior NiceExcel conversations contain additional diagnostics that are not part of the current tracked `main` tree:
-
-- A previous diagnostic recorded LibreOffice core source commit `6e0b39149b549bd05065d451006c4d060589891d`, ABI `arm64-v8a`, ELF64 AArch64, and 14 native libraries.
-- The native-core archive was previously reported as approximately 78.5 MB compressed; another diagnostic reported a 207 MB `liblo-native-code.so`. Treat these as historical artifact metadata, not proof that the files are present in this branch or are a matching, reproducible build.
-- Only a subset of the 14 library names is explicitly preserved in the available diagnostics: `liblo-native-code.so`, `libc++_shared.so`, `libnss3.so`, `libssl3.so`. Do not invent the other ten names; recover the original manifest/ZIP before packaging.
-- A separate build #42 APK was reported as 32.8 MB and explicitly logged that the LibreOffice native core was not present.
-- Runtime verification later failed because these files were missing: `fundamentalrc`, `bootstraprc`, `unorc`, `sofficerc`, `main.xcd`, and `registry_en-US.xcd`. The native artifact upload was skipped after that failure.
-- Another audit reported that the native-core ZIP did not contain the matching Java/JNI bootstrap classes or UNO/LibreOffice runtime assets, and that the existing probe only loaded .so files; a real recalculation adapter was not implemented.
-- A previous workflow used `native-engine/jniLibs/arm64-v8a/` as a staging location. The currently audited `app/build.gradle` does not declare that directory as a JNI source set. Android's default app JNI packaging path is `app/src/main/jniLibs`; if the staging directory is retained, Gradle must explicitly map it and CI must verify the final APK, not merely the staging folder.
-
-**Provenance action:** obtain the original native-core ZIP and diagnostics ZIP again (or their original workflow artifacts), extract the full manifest with SHA-256 hashes, verify the source commit and ABI, inspect ELF `DT_NEEDED`, and verify all six runtime configuration/registry files. The current diagnostics are incomplete, so this blueprint deliberately does not claim the old binary set is reusable.
-
-## 15. Implementation sequence and stop/go criteria
-
-**Milestone A — provenance and binary audit**
-- Obtain the user's earlier native-core and diagnostics archives or locate their exact repository artifacts.
-- Match binary build revision, ABI, checksums, ELF dependencies, runtime asset layout and licenses.
-- If provenance cannot be proven, rebuild from official source; do not mix binaries from different builds.
-
-**Milestone B — standalone ARM64 native POC**
-- Build a minimal Android test target using official bootstrap and the same native core.
-- Open a generated XLSX with formulas.
-- Set a formula, calculate through Calc, read typed result, save, close and reopen.
-- Capture logcat and native initialization/service diagnostics.
-
-**Milestone C — NiceExcel adapter**
-- Add JNI adapter and Kotlin facade.
-- Add formula/device instrumentation tests.
-- Keep current UI untouched; wire a feature-gated internal test path first.
-
-**Milestone D — default engine migration**
-- Route all native grid formula operations through Calc.
-- Disable old calculation paths only after all acceptance tests pass.
-- Preserve the existing Native UI, edit/keyboard handling and workbook workflows.
-
-**Release GO criteria:** all package checks pass; real ARM64 phone initializes the bundled LibreOffice core; all formula correctness and save/reopen tests pass; no fallback engine is used; no crash or UI-thread calculation; licensing/provenance and APK size are reviewed.
-
-**Current status: NO-GO for claiming integration.** The repository currently contains no LibreOffice runtime. This blueprint is not evidence that formulas calculate through Calc.
+**Current status: NOT YET CALCULATING IN THE TARGET APK.** The recovered native files are genuine and their packaging dependencies are verified, but this is not proof that the current `my-excel` APK has loaded Calc or calculated a formula.
