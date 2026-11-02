@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - 'native/libreoffice/**'
+      - 'testdata/libreoffice/**'
+      - 'scripts/validate_libreoffice_formula_fixture.py'
       - 'app/src/main/cpp/**'
       - 'app/src/main/jni/**'
       - 'app/src/main/java/org/libreoffice/**'
@@ -66,4 +69,3 @@ jobs:
           path: libreoffice-runtime-audit.json
           if-no-files-found: ignore
           retention-days: 30
-\n
