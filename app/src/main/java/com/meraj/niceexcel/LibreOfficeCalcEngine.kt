@@ -36,6 +36,7 @@ object LibreOfficeCalcEngine {
     private const val TAG = "NiceExcel-LO-Calc"
     private const val LOK_THREAD_NAME = "NiceExcel-LibreOfficeKit"
     private const val RECALC_COMMAND = ".uno:CalculateHard"
+    private const val LO_SOURCE_COMMIT = "6e0b39149b549bd05065d451006c4d060589891d"
     private val commandTimeoutMinutes = 5L
 
     private val loThread = Executors.newSingleThreadExecutor { task ->
@@ -131,7 +132,7 @@ object LibreOfficeCalcEngine {
             val handle = LibreOfficeKit.getLibreOfficeKitHandle()
                 ?: error("LibreOfficeKit returned a null native office handle")
             office = Office(handle)
-            Log.i(TAG, "LOK_INITIALIZED abi=arm64-v8a pid=" + android.os.Process.myPid())
+            Log.i(TAG, "LOK_INITIALIZED engine=LibreOfficeCalc source=$LO_SOURCE_COMMIT abi=arm64-v8a pid=" + android.os.Process.myPid())
         } catch (failure: Throwable) {
             initializationFailure = failure
             Log.e(TAG, "LOK_INITIALIZATION_FAILED", failure)
