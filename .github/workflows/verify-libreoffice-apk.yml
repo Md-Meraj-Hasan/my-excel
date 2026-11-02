@@ -1,0 +1,42 @@
+name: Verify LibreOffice Calc Native APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Verify real ARM64 LibreOffice core
+        run: bash native-engine/scripts/check-arm64-core.sh
+      - name: Verify Gradle native core task
+        run: gradle --no-daemon :app:verifyLibreOfficeArm64Core
+      - name: Build APK
+        run: gradle --no-daemon assembleDebug
+      - name: Verify LibreOffice core is inside APK
+        run: bash native-engine/scripts/check-apk-libreoffice.sh app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload verified LibreOffice APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NiceExcel-debug-apk-LibreOffice-ARM64-verified
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

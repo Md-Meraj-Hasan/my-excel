@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "engine": "LibreOffice Calc Android",
+  "source_repository": "https://github.com/LibreOffice/core",
+  "source_commit": "6e0b39149b549bd05065d451006c4d060589891d",
+  "source_commit_status": "verified against the native-core ZIP and ARM64-BUILD-MANIFEST from workflow run 41280547094",
+  "required_abis": [
+    "arm64-v8a"
+  ],
+  "jni_library": "liblo-native-code.so",
+  "native_libraries_from_official_android_bootstrap_loader": [
+    "libnspr4.so",
+    "libplds4.so",
+    "libplc4.so",
+    "libnssutil3.so",
+    "libfreebl3.so",
+    "libsqlite3.so",
+    "libsoftokn3.so",
+    "libnss3.so",
+    "libnssckbi.so",
+    "libnssdbm3.so",
+    "libsmime3.so",
+    "libssl3.so",
+    "libc++_shared.so",
+    "liblo-native-code.so"
+  ],
+  "required_runtime_file_basenames": [
+    "fundamentalrc",
+    "bootstraprc",
+    "unorc",
+    "sofficerc",
+    "main.xcd",
+    "registry_en-US.xcd"
+  ],
+  "bootstrap_class": "org.libreoffice.kit.LibreOfficeKit",
+  "runtime_assets_root": "assets/program/",
+  "notes": [
+    "This is an explicit verification contract, not proof that any of these files are currently packaged.",
+    "Reconcile the source_commit and exact loader list against the original diagnostics archive before producing release binaries.",
+    "The six runtime files are required because a previous NiceExcel runtime audit reported them missing.",
+    "The selected initial integration uses the official LOK Java/JNI wrappers and .uno:CalculateHard with completion callback; a custom C++ JNI bridge is not required for this milestone."
+  ],
+  "build_environment": {
+    "libreoffice_source_commit": "6e0b39149b549bd05065d451006c4d060589891d",
+    "android_ndk": "27.2.12479018",
+    "android_api_level": 21,
+    "abi": "arm64-v8a",
+    "build_jobs": 2,
+    "native_core_artifact_run_id": 41280547094,
+    "native_core_artifact_id": 13076063462,
+    "runtime_assets_artifact_id": 13076337479,
+    "status": "native-core ZIP, runtime-assets ZIP and diagnostics ZIP downloaded; archive CRC, ELF architecture, SHA-256 and dependency closure verified in this session; real-device calculation not yet tested"
+  },
+  "historical_sha256": {
+    "libc++_shared.so": "4397241b4bd20a8e579bfb41d21107857e12985f6a01ca0c2a5f83380d1270b4",
+    "libfreebl3.so": "579e6c34d4c597dd20661f64ed9465a6a411a96c70368358d91b225c34024a8f",
+    "liblo-native-code.so": "f9ddaca44259a0e643131d43a6a8165bf027e343011f725713112a1489a2fbce",
+    "libnspr4.so": "440fb0a6285d0448b9c366ca9d29aaf6d034cb94d3fb0dfb2e9f631f60cd29ac",
+    "libnss3.so": "c01295e95cc80c63711b17a8a1c4f9aee29c798e350cafce439eaba89b295369",
+    "libnssckbi.so": "153af39e2522e59a3618df04640fc810d10af8ed5a9c088117170d64c23c3c82",
+    "libnssdbm3.so": "285251fb67bfe2ae5b34ac200d737170f6886015718f86b970fe79eeb126a817",
+    "libnssutil3.so": "de7475b50e8db333813818deb79a4457c9ce793324f8a8657f73ac4ec3ca82b7",
+    "libplc4.so": "c38c4cc25898d858858ec202be31555b07a8455c1f3e2126c7a3363eb14c4d2e",
+    "libplds4.so": "f52a2231d6dc3b219d36e27d38e68c5240d887be35c13204b7e30333a6355844",
+    "libsmime3.so": "3c77c0174b6fd2e0921526cbe7b7680249f5b49cdb74690fb8baaf19db0144e2",
+    "libsoftokn3.so": "3d5439aebc97e0822193fc20045c7fbff7f10a04439baeb7e1446427a31d613b",
+    "libsqlite3.so": "aceb93745ced7cfc6f0ac858c80eefb51c332ffc7a19b4cb297ccdae23d2783a",
+    "libssl3.so": "e4b6ac1becc638693c5f5650b9ffc19636a769f48158b91a4594445d1b6562d2"
+  },
+  "required_runtime_asset_paths": [
+    "assets/program/fundamentalrc",
+    "assets/program/bootstraprc",
+    "assets/program/unorc",
+    "assets/program/services.rdb",
+    "assets/unpack/program/sofficerc",
+    "assets/unpack/program/udkapi.rdb",
+    "assets/unpack/program/offapi.rdb",
+    "assets/unpack/program/oovbaapi.rdb",
+    "assets/unpack/etc/fonts/fonts.conf",
+    "assets/share/registry/main.xcd",
+    "assets/share/registry/res/registry_en-US.xcd",
+    "assets/licenses/MPL-2.0.txt",
+    "assets/licenses/THIRD-PARTY-LICENSES.md"
+  ],
+  "apk_asset_compression": "STORE (no compression) for every assets/ entry; the source ZIP artifact may itself be compressed",
+  "native_core_elf_verification": {
+    "elf_class": "ELF64",
+    "machine": "AArch64",
+    "machine_id": 183,
+    "dynamic_dependencies_verified": true,
+    "unresolved_non_platform_dependencies": []
+  },
+  "lok_bootstrap_sources": [
+    "app/src/main/java/org/libreoffice/kit/LibreOfficeKit.java",
+    "app/src/main/java/org/libreoffice/kit/Office.java",
+    "app/src/main/java/org/libreoffice/kit/Document.java",
+    "app/src/main/java/org/libreoffice/kit/DirectBufferAllocator.java"
+  ],
+  "engine_adapter_sources": [
+    "app/src/main/java/com/meraj/niceexcel/LibreOfficeCalcEngine.kt",
+    "app/src/main/java/com/meraj/niceexcel/LibreOfficeEngineService.java",
+    "app/src/main/java/com/meraj/niceexcel/LibreOfficeServiceClient.kt"
+  ],
+  "runtime_asset_artifact_details": {
+    "entry_count": 78,
+    "uncompressed_bytes": 16737097,
+    "required_final_apk_paths_present_after_assets_and_assets_strippedUI_merge": true,
+    "final_apk_assets_must_be_store_uncompressed": true
+  }
+}

@@ -1,0 +1,317 @@
+name: Build NiceExcel APK with LibreOffice ARM64
+
+on:
+  push:
+    branches: [feature/libreoffice-calc-runtime-blueprint]
+    paths:
+      - 'app/**'
+      - 'native-engine/**'
+      - 'native/libreoffice/**'
+      - 'testdata/libreoffice/**'
+      - 'scripts/verify_libreoffice_runtime.py'
+      - '.github/workflows/build-apk-with-libreoffice.yml'
+  workflow_dispatch:
+    inputs:
+      native_run_id:
+        description: "Successful LibreOffice native-core workflow Run ID (including runtime assets)"
+        required: true
+        type: string
+  workflow_run:
+    workflows: ["Build official LibreOffice Android ARM64 core"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: niceexcel-libreoffice-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
+
+      - name: Resolve latest native-core build for this branch
+        id: native-run
+        if: github.event_name == 'push'
+        uses: actions/github-script@v7
+        timeout-minutes: 240
+        with:
+          script: |
+            const branch = context.ref.replace("refs/heads/", "");
+            const deadline = Date.now() + 4 * 60 * 60 * 1000;
+            while (Date.now() < deadline) {
+              const response = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: "build-libreoffice-arm64.yml",
+                branch,
+                per_page: 10
+              });
+              const latest = response.data.workflow_runs.find(run => run.head_branch === branch);
+              if (latest && latest.status === "completed") {
+                if (latest.conclusion !== "success") {
+                  throw new Error(`Latest native-core build ${latest.id} ended with ${latest.conclusion}`);
+                }
+                core.setOutput("run_id", String(latest.id));
+                core.info(`Using successful native-core workflow run ${latest.id}`);
+                return;
+              }
+              core.info(`Waiting for native-core build on ${branch}; latest status=${latest?.status ?? "not found"}`);
+              await new Promise(resolve => setTimeout(resolve, 30000));
+            }
+            throw new Error("Timed out waiting for a successful LibreOffice ARM64 native-core build.");
+
+      - name: Download LibreOffice ARM64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libreoffice-arm64-native-core
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id || inputs.native_run_id || steps.native-run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: /tmp/libreoffice-core
+
+      - name: Download matching LibreOffice runtime assets
+        uses: actions/download-artifact@v4
+        with:
+          name: libreoffice-arm64-runtime-assets
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id || inputs.native_run_id || steps.native-run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: /tmp/libreoffice-runtime
+
+      - name: Stage LibreOffice runtime assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=app/src/main/assets
+          mkdir -p "$ROOT"
+          test -s /tmp/libreoffice-runtime/assets/program/fundamentalrc
+          test -s /tmp/libreoffice-runtime/assets/unpack/program/sofficerc
+          test -s /tmp/libreoffice-runtime/assets/unpack/program/offapi.rdb
+          test -s /tmp/libreoffice-runtime/assets/unpack/program/udkapi.rdb
+          test -s /tmp/libreoffice-runtime/assets/unpack/program/oovbaapi.rdb
+          cp -a /tmp/libreoffice-runtime/assets/. "$ROOT/"
+          cp -a /tmp/libreoffice-runtime/assets_strippedUI/. "$ROOT/"
+          FONT_CONF="$ROOT/unpack/etc/fonts/fonts.conf"
+          test -s "$FONT_CONF"
+          sed -i -E 's#/data/data/[^/]+/fontconfig#/data/data/com.meraj.niceexcel/fontconfig#g' "$FONT_CONF"
+          grep -q '/data/data/com.meraj.niceexcel/fontconfig' "$FONT_CONF"
+          for required in program/fundamentalrc program/bootstraprc program/unorc program/services.rdb unpack/program/sofficerc unpack/program/udkapi.rdb unpack/program/offapi.rdb unpack/program/oovbaapi.rdb unpack/etc/fonts/fonts.conf share/registry/main.xcd share/registry/res/registry_en-US.xcd; do
+            test -s "$ROOT/$required" || { echo "Missing LibreOffice runtime asset: $required" >&2; exit 1; }
+          done
+          echo "Staged $(find "$ROOT" -type f | wc -l) LibreOffice runtime files"
+
+      - name: Stage native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-engine/jniLibs/arm64-v8a
+          mapfile -t libs < <(find /tmp/libreoffice-core -type f -name '*.so' -print)
+          test "${#libs[@]}" -eq 14
+          for lib in "${libs[@]}"; do
+            cp -v "$lib" native-engine/jniLibs/arm64-v8a/
+          done
+          test -s native-engine/jniLibs/arm64-v8a/liblo-native-code.so
+          count=$(find native-engine/jniLibs/arm64-v8a -maxdepth 1 -name '*.so' | wc -l)
+          echo "Native libraries found: $count"
+          test "$count" -eq 14
+
+      - name: Verify repository LibreOffice Java bootstrap is retained
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use the checked-in NiceExcel bootstrap adapter. Do not overwrite it
+          # with upstream Java sources: the adapter extracts UNO registries
+          # before JNI startup and validates the runtime layout.
+          for source in \
+            app/src/main/java/org/libreoffice/kit/LibreOfficeKit.java \
+            app/src/main/java/org/libreoffice/kit/Office.java \
+            app/src/main/java/org/libreoffice/kit/Document.java; do
+            test -s "$source" || { echo "Missing checked-in LibreOffice bootstrap source: $source" >&2; exit 1; }
+          done
+          grep -q 'prepareUnpackedRuntime' app/src/main/java/org/libreoffice/kit/LibreOfficeKit.java
+          echo "Using checked-in NiceExcel LibreOffice bootstrap adapter."
+          
+      - name: Stage LibreOffice license notices
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/assets/licenses
+          cp native-engine/THIRD-PARTY-LICENSES.md app/src/main/assets/licenses/
+          curl -fsSL https://www.mozilla.org/media/MPL/2.0/index.815ca599c9df.txt \
+            -o app/src/main/assets/licenses/MPL-2.0.txt
+          test -s app/src/main/assets/licenses/MPL-2.0.txt
+
+      - name: Verify ARM64 architecture
+        run: bash native-engine/scripts/check-arm64-core.sh
+
+      - name: Verify native dependencies
+        run: bash native-engine/scripts/check-native-dependency-closure.sh
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Validate Calc formula fixture (schema only; not a calculation test)
+        run: python3 scripts/validate_libreoffice_formula_fixture.py testdata/libreoffice/formula-cases.json
+
+      - name: Run unit tests and compile official Java bootstrap
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Verify native, Java bootstrap, and runtime prerequisites
+        run: |
+          gradle --no-daemon :app:verifyLibreOfficeArm64Core
+          gradle --no-daemon :app:verifyLibreOfficeRuntimeAssets
+
+      - name: Build APK and Android instrumentation test APK
+        run: |
+          gradle --no-daemon assembleDebug
+          gradle --no-daemon assembleDebugAndroidTest
+
+      - name: Verify LibreOffice library inside APK
+        run: bash native-engine/scripts/check-apk-libreoffice.sh app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Verify final APK 16 KB shared-library ZIP alignment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIPALIGN="$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          test -x "$ZIPALIGN"
+          "$ZIPALIGN" -c -P 16 -v 4 app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Strictly audit final APK runtime manifest
+        run: |
+          python3 scripts/verify_libreoffice_runtime.py \
+            --source-root . \
+            --apk app/build/outputs/apk/debug/app-debug.apk \
+            --abi arm64-v8a
+
+      - name: Upload ARM64 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NiceExcel-LibreOffice-ARM64-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload ARM64 instrumentation test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NiceExcel-LibreOffice-ARM64-debug-tests
+          path: app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  real-phone-formula-acceptance:
+    needs: build
+    runs-on: [self-hosted, windows, x64, niceexcel-android-device]
+    timeout-minutes: 30
+    steps:
+      - name: Download ARM64 app and instrumentation APKs from this workflow run
+        uses: actions/download-artifact@v4
+        with:
+          name: NiceExcel-LibreOffice-ARM64-debug-apk
+          path: artifacts/app
+
+      - name: Download ARM64 instrumentation APK
+        uses: actions/download-artifact@v4
+        with:
+          name: NiceExcel-LibreOffice-ARM64-debug-tests
+          path: artifacts/tests
+
+      - name: Verify connected physical ARM64 phone and airplane mode
+        shell: pwsh
+        run: |
+          $adbCommand = Get-Command adb.exe -ErrorAction SilentlyContinue
+          if ($adbCommand) {
+            $adb = $adbCommand.Source
+          } elseif ($env:ANDROID_HOME) {
+            $adb = Join-Path $env:ANDROID_HOME "platform-tools/adb.exe"
+          } else {
+            throw "Install Android SDK Platform Tools and add adb.exe to PATH (or set ANDROID_HOME)."
+          }
+          if (!(Test-Path $adb)) { throw "adb.exe not found: $adb" }
+          & $adb start-server
+          & $adb devices -l
+          $online = @(& $adb devices | Select-String "\sdevice$")
+          if ($online.Count -ne 1) { throw "Connect exactly one authorized Android phone; found $($online.Count) online devices." }
+          $abi = (& $adb shell getprop ro.product.cpu.abi).Trim()
+          $android = (& $adb shell getprop ro.build.version.release).Trim()
+          $model = (& $adb shell getprop ro.product.model).Trim()
+          $airplane = (& $adb shell settings get global airplane_mode_on).Trim()
+          Write-Host "Connected phone: $model / Android $android / ABI $abi / airplane_mode=$airplane"
+          if ($abi -ne "arm64-v8a") { throw "LibreOffice core is arm64-v8a only; connected device reports $abi" }
+          if ($airplane -ne "1") { throw "Enable Airplane Mode and connect the phone to this runner using USB before running offline Calc acceptance." }
+          "ANDROID_ADB=$adb" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install app and instrumentation APKs
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem artifacts/app -Filter *.apk -Recurse | Select-Object -First 1
+          $tests = Get-ChildItem artifacts/tests -Filter *.apk -Recurse | Select-Object -First 1
+          if (!$app -or !$tests) { throw "App APK or instrumentation APK is missing." }
+          & $env:ANDROID_ADB install -r $app.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Failed to install NiceExcel app APK." }
+          & $env:ANDROID_ADB install -r $tests.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Failed to install NiceExcel instrumentation APK." }
+          & $env:ANDROID_ADB logcat -c
+
+      - name: Run real LibreOffice Calc formula acceptance tests
+        shell: pwsh
+        run: |
+          $output = & $env:ANDROID_ADB shell am instrument -w -r com.meraj.niceexcel.test/androidx.test.runner.AndroidJUnitRunner 2>&1
+          $output | Tee-Object -FilePath instrumentation-output.txt
+          if ($LASTEXITCODE -ne 0 -or -not ($output -match "OK \(4 tests\)")) {
+            throw "LibreOffice Calc instrumentation tests did not report OK (4 tests)."
+          }
+
+      - name: Verify native Calc evidence and collect logcat
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:ANDROID_ADB) {
+            & $env:ANDROID_ADB logcat -d -s NiceExcel-LO-Calc:I NiceExcel-LO-Service:I NiceExcel-LO-IPC:I AndroidRuntime:E |
+              Out-File -FilePath libreoffice-phone-logcat.txt -Encoding utf8
+          }
+          if (Test-Path instrumentation-output.txt) { Get-Content instrumentation-output.txt }
+          if (Test-Path libreoffice-phone-logcat.txt) {
+            $log = Get-Content libreoffice-phone-logcat.txt -Raw
+            foreach ($marker in @("LOK_INITIALIZED", "CALC_COMMAND_SUCCESS", "CALC_SAVE_REOPEN_OK")) {
+              if ($log -notmatch $marker) { throw "Missing required real-device evidence: $marker" }
+            }
+          } else {
+            throw "Phone logcat evidence was not collected."
+          }
+
+      - name: Upload real-phone formula report and logcat
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NiceExcel-LibreOffice-real-phone-test-report
+          path: |
+            instrumentation-output.txt
+            libreoffice-phone-logcat.txt
+          if-no-files-found: warn
+          retention-days: 30
