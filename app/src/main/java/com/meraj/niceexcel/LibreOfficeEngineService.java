@@ -44,7 +44,7 @@ public final class LibreOfficeEngineService extends Service {
             new Handler(Looper.getMainLooper(), message -> {
                 if (message.what != MSG_RECALCULATE_XLSX) return false;
                 final Messenger replyTo = message.replyTo;
-                final Bundle requestData = message.getData();
+                final Bundle requestData = new Bundle(message.getData());
                 requestExecutor.execute(() -> handleRecalculation(requestData, replyTo));
                 return true;
             })
