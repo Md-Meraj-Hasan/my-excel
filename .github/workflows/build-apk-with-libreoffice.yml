@@ -139,8 +139,10 @@ jobs:
           gradle --no-daemon :app:verifyLibreOfficeArm64Core
           gradle --no-daemon :app:verifyLibreOfficeRuntimeAssets
 
-      - name: Build APK
-        run: gradle --no-daemon assembleDebug
+      - name: Build APK and Android instrumentation test APK
+        run: |
+          gradle --no-daemon assembleDebug
+          gradle --no-daemon assembleDebugAndroidTest
 
       - name: Verify LibreOffice library inside APK
         run: bash native-engine/scripts/check-apk-libreoffice.sh app/build/outputs/apk/debug/app-debug.apk
@@ -157,5 +159,13 @@ jobs:
         with:
           name: NiceExcel-LibreOffice-ARM64-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload ARM64 instrumentation test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NiceExcel-LibreOffice-ARM64-debug-tests
+          path: app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           if-no-files-found: error
           retention-days: 14
