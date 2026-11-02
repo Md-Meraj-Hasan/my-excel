@@ -93,7 +93,7 @@ def main() -> int:
         with zipfile.ZipFile(apk) as zf:
             names = zf.namelist()
             name_set = set(names)
-            dex_names = [n for n in names if re.fullmatch(r"classes(?:\\d+)?\\.dex", n)]
+            dex_names = [n for n in names if re.fullmatch(r"classes(?:\d+)?\.dex", n)]
             dex_blob = b"".join(zf.read(n) for n in dex_names)
             bootstrap_present = any(marker in dex_blob for marker in BOOTSTRAP_MARKERS)
             if not bootstrap_present:
@@ -149,7 +149,7 @@ def main() -> int:
                             [readelf, "-d", str(temp)],
                             check=False, capture_output=True, text=True,
                         )
-                        needed = re.findall(r"Shared library: \\[(.*?)\\]", proc.stdout)
+                        needed = re.findall(r"Shared library: \[(.*?)\]", proc.stdout)
                         dependency_report[abi] = {
                             "readelf_exit": proc.returncode,
                             "needed_libraries": needed,
