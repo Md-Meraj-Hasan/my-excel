@@ -113,7 +113,7 @@ def main() -> int:
             errors.append("AndroidManifest does not declare the private :libreoffice service process")
     if gradle_path.is_file():
         gradle_text = gradle_path.read_text(encoding="utf-8")
-        for token in ['noCompress += ""', "native-engine/jniLibs", "poi-ooxml:5.4.1"]:
+        for token in ['noCompress += ""', "useLegacyPackaging true", "native-engine/jniLibs", "poi-ooxml:5.4.1"]:
             if token not in gradle_text:
                 errors.append(f"app/build.gradle is missing required LibreOffice packaging configuration: {token}")
 
