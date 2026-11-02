@@ -12,6 +12,11 @@ on:
       - '.github/workflows/build-apk-with-libreoffice.yml'
   workflow_dispatch:
     inputs:
+      source_branch:
+        description: "NiceExcel source branch containing the LibreOffice integration"
+        required: true
+        default: "feature/libreoffice-calc-runtime-blueprint"
+        type: string
       native_run_id:
         description: "Successful LibreOffice native-core workflow Run ID (including runtime assets)"
         required: true
@@ -38,7 +43,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
+          ref: ${{ github.event.workflow_run.head_branch || inputs.source_branch || github.ref }}
 
       - name: Resolve latest native-core build for this branch
         id: native-run
