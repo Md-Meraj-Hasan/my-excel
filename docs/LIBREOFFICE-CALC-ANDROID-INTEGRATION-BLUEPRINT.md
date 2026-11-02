@@ -82,7 +82,7 @@ I downloaded and inspected both ZIPs in this session:
 - Native archive contains exactly 14 shared libraries.
 - Every one of the 14 libraries is ELF64, machine ID 183 (AArch64).
 - `liblo-native-code.so` is 207,175,976 bytes.
-- The total uncompressed size of the 14 native libraries is 215,690,096 bytes.
+- The total uncompressed size of the 14 native libraries is 215,690,096 bytes. This is a substantial installed-storage cost; the exact final APK size has not yet been measured.
 - `readelf -d` dependency closure was checked for all 14 libraries. All non-platform dependencies resolve inside the same archive; no missing dependency was found.
 - SHA-256 values for all 14 libraries are recorded in `native/libreoffice/runtime-manifest.json`.
 
@@ -129,7 +129,7 @@ assets/share/registry/res/registry_en-US.xcd
 
 All 11 required files were found in the recovered runtime artifact after applying the documented merge of `assets` and `assets_strippedUI`.
 
-**Critical:** the runtime artifact ZIP itself compresses its entries; that is acceptable. However, LibreOffice's Android APK virtual filesystem reads its packaged asset entries as ZIP STORE/uncompressed. The final APK must therefore package every `assets/` file uncompressed. The older reference Gradle configuration uses:
+**Critical:** the runtime artifact ZIP itself compresses its entries; that is acceptable. However, LibreOffice's Android APK virtual filesystem reads its packaged asset entries as ZIP STORE/uncompressed. The final APK must therefore package every `assets/` file uncompressed. JNI libraries are configured with legacy compression so the downloadable APK is smaller and Android extracts the .so files during installation; this does not reduce installed storage. The Gradle configuration uses:
 
 ```groovy
 android {
