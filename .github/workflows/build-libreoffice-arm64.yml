@@ -1,6 +1,10 @@
 name: Build official LibreOffice Android ARM64 core
 
 on:
+  push:
+    branches: [feature/libreoffice-calc-runtime-blueprint]
+    paths:
+      - '.github/workflows/build-libreoffice-arm64.yml'
   workflow_dispatch:
     inputs:
       libreoffice_ref:
@@ -24,7 +28,8 @@ concurrency:
 jobs:
   build-native-core:
     # LibreOffice native compilation is memory/disk intensive. This workflow is
-    # deliberately manual and separate from the fast NiceExcel APK workflow.
+    # deliberately separate from the fast NiceExcel APK workflow; this branch-only push trigger
+    # lets the integration branch start its pinned native build without modifying main.
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
