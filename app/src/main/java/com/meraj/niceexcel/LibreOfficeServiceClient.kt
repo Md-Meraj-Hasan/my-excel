@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicReference
 object LibreOfficeServiceClient {
     private const val TAG = "NiceExcel-LO-IPC"
     private const val SERVICE_TIMEOUT_SECONDS = 45L
-    private const val CALC_TIMEOUT_MINUTES = 8L
+    private const val CALC_TIMEOUT_MINUTES = 12L
 
     /**
      * Builds a temporary XLSX snapshot, sends it to Calc, and returns the
