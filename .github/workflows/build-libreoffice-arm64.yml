@@ -105,7 +105,12 @@ jobs:
             assets/program/fundamentalrc
             assets/program/bootstraprc
             assets/program/unorc
+            assets/program/services.rdb
             assets/unpack/program/sofficerc
+            assets/unpack/program/udkapi.rdb
+            assets/unpack/program/offapi.rdb
+            assets/unpack/program/oovbaapi.rdb
+            assets/unpack/etc/fonts/fonts.conf
             assets_strippedUI/share/registry/main.xcd
             assets_strippedUI/share/registry/res/registry_en-US.xcd
           )
