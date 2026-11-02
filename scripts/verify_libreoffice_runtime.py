@@ -112,10 +112,29 @@ def main() -> int:
 
             runtime_files = [n for n in names if n.startswith(RUNTIME_PREFIXES)]
             required_runtime = runtime_manifest.get("required_runtime_file_basenames", [])
+            required_asset_paths = runtime_manifest.get("required_runtime_asset_paths", [])
+            missing_asset_paths = [path for path in required_asset_paths if path not in name_set or zf.getinfo(path).file_size == 0]
+            if missing_asset_paths:
+                errors.append(f"Missing/empty LibreOffice runtime asset paths: {missing_asset_paths}")
+            compressed_assets = [i.filename for i in zf.infolist()
+                                 if i.filename.startswith("assets/") and i.compress_type != zipfile.ZIP_STORED]
+            if compressed_assets:
+                errors.append(f"LibreOffice APK assets must be ZIP STORE/uncompressed; found compressed entries: {compressed_assets[:12]}")
             packaged_basenames = {Path(n).name for n in names}
             missing_runtime = [name for name in required_runtime if name not in packaged_basenames]
             if missing_runtime:
                 errors.append(f"Missing required LibreOffice runtime files: {missing_runtime}")
+
+            historical_hashes = runtime_manifest.get("historical_sha256", {})
+            hash_mismatches = []
+            for library, expected_hash in historical_hashes.items():
+                lib_path = f"lib/arm64-v8a/{library}"
+                if lib_path in name_set:
+                    actual_hash = __import__("hashlib").sha256(zf.read(lib_path)).hexdigest()
+                    if actual_hash != expected_hash:
+                        hash_mismatches.append({"library": library, "expected": expected_hash, "actual": actual_hash})
+            if hash_mismatches:
+                errors.append(f"Historical native binary SHA-256 mismatch: {hash_mismatches}")
 
             required_native = runtime_manifest.get("native_libraries_from_official_android_bootstrap_loader", [])
             native_status = {}
