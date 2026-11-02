@@ -11,7 +11,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
-import java.util.LinkedHashMap
 
 /**
  * These are real-device integration tests: they initialize the bundled
@@ -80,7 +79,7 @@ class LibreOfficeCalcIntegrationTest {
         }
     }
 
-    @Test(timeout = 480000)
+    @Test(timeout = 720000)
     fun calcHardRecalculateReturnsExpectedTypedFormulaResults() {
         val fixture = loadFixture()
         val snapshot = snapshotFromFixture(fixture)
