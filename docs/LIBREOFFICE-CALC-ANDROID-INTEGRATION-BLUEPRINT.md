@@ -241,19 +241,22 @@ Capture:
 ## 10. Current status and next steps
 
 Completed in this work branch:
-- created a separate development branch;
-- inspected the target `my-excel` source and its formula call paths;
-- compared the older `Nice-Excel` reference implementation;
-- recovered and inspected the actual ARM64 native-core and runtime-assets artifacts from run 41280547094;
-- verified all 14 native libraries are ELF64 AArch64 and checked their dependency closure;
-- recorded the native hashes, source commit, NDK and required runtime paths in `native/libreoffice/runtime-manifest.json`;
-- added formula test vectors, fixture validation and a strict APK runtime audit workflow.
+- created the development branch and draft pull request;
+- inspected the target `my-excel` formula call paths and compared the older `Nice-Excel` implementation;
+- recovered and inspected the actual ARM64 native-core, runtime-assets and diagnostics artifacts from run 41280547094;
+- verified all 14 native libraries are ELF64 AArch64, recorded SHA-256 values, and checked ELF dependency closure;
+- recorded the pinned source commit, NDK, all 14 hashes and required runtime paths in `native/libreoffice/runtime-manifest.json`;
+- ported the official LOK bootstrap wrapper classes, Calc engine adapter, isolated service and file-based client;
+- routed Native formula recalculation through LibreOffice and made grid rendering cache-only;
+- routed formula-containing XLSX Save operations through Calc before writing the selected destination;
+- added formula fixture vectors, Android instrumentation tests, fixture validation, source compile gate, native build workflow, APK packaging workflow and real-phone acceptance workflow;
+- added strict checks for the native libraries, asset files, STORE compression, bootstrap DEX marker, binary hashes, service process and absence of POI/Kotlin fallback in the active Native formula path.
 
 Not yet completed:
-- port the official LOK bootstrap and engine/service code into the target repo;
-- correct the LOK worker-thread and command-completion issues;
-- connect the target `MainActivity` formula pipeline and Save path;
-- stage the two recovered artifacts through the APK workflow;
-- run a real Android ARM64 device formula test.
+- run and fix the source/instrumentation compile CI;
+- execute the native build workflow in the target repository and stage its artifacts;
+- produce and inspect the target `my-excel` LibreOffice-enabled APK;
+- run the two formula instrumentation tests on a real ARM64 Android phone;
+- confirm the real phone logcat includes `CALC_COMMAND_SUCCESS` and `CALC_SAVE_REOPEN_OK`.
 
-**Current status: NOT YET CALCULATING IN THE TARGET APK.** The recovered native files are genuine and their packaging dependencies are verified, but this is not proof that the current `my-excel` APK has loaded Calc or calculated a formula.
+**Current status: IMPLEMENTED IN THE WORK BRANCH, NOT YET DEVICE-VERIFIED.** The Native calculation and Save paths now call the LOK service, but the target APK has not yet been built with the runtime and no real phone formula result has been observed.
