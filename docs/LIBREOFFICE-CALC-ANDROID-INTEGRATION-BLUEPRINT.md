@@ -197,6 +197,12 @@ New flow:
 8. On any engine failure, show `#ENGINE!`/a clear status and log the exact LO error. Do not show a POI/Kotlin value as a Calc result.
 9. On Save, use the same LOK worker to recalculate the actual XLSX export and save a verified Calc-produced XLSX before committing it to the user's destination.
 
+### Workbook-model limitation for this first bridge
+
+The live calculation snapshot is currently generated from NiceExcel's in-memory cell maps using `XlsxCodec`. It contains the current sheets, values and formula strings, but it does not reconstruct workbook features that the current Native model/codec does not represent (for example some named ranges, structured tables, pivot tables, external links, charts or advanced metadata). The user's Save path also uses the existing `XlsxCodec`, whose documented scope is common cell styles rather than every Excel feature.
+
+Therefore this milestone proves that LibreOffice Calc calculates formulas in the workbook model NiceExcel currently supports; it does not yet make LibreOffice the authoritative editor for every possible Excel workbook feature. A later compatibility phase should retain the original LOK document as the workbook source of truth and synchronize Native edits into that document through LOK/UNO commands, instead of rebuilding every calculation snapshot from maps.
+
 ## 8. Formula verification suite
 
 Fixture: `testdata/libreoffice/formula-cases.json`. It defines Excel-English/A1 formula inputs and expected typed outputs.
