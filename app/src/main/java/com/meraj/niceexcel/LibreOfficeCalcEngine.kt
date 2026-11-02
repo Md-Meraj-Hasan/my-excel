@@ -189,8 +189,8 @@ object LibreOfficeCalcEngine {
 
         document.setMessageCallback { signal, payload ->
             if (signal == Document.CALLBACK_UNO_COMMAND_RESULT) {
-                val json = runCatching { JSONObject(payload) }.getOrNull() ?: return@setMessageCallback
-                if (json.optString("commandName") == command) {
+                val json = runCatching { JSONObject(payload) }.getOrNull()
+                if (json != null && json.optString("commandName") == command) {
                     callbackPayload.set(payload)
                     callbackResult.set(json)
                     completed.countDown()
