@@ -5,11 +5,20 @@ plugins {
     id 'com.chaquo.python'
 }
 
+// LibreOfficeKit's APK-backed virtual filesystem requires every runtime asset
+// to be ZIP STORE/uncompressed. Derive the complete extension set after the
+// workflow stages the matching runtime payload; keep "" for extensionless files.
+def libreOfficeAssetExtensions = fileTree("src/main/assets").files.collect { asset ->
+    def dot = asset.name.lastIndexOf(".")
+    dot >= 0 ? asset.name.substring(dot + 1).toLowerCase() : ""
+}.unique()
+
 android {
     // LibreOffice Android's APK-backed asset filesystem requires its runtime assets
     // to be stored uncompressed inside the final APK.
     androidResources {
         noCompress += ""
+        noCompress += libreOfficeAssetExtensions
     }
 
     // Compress the very large native core in the downloadable APK; Android
