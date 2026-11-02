@@ -199,7 +199,29 @@ Compare numeric results with tolerance; compare text, booleans and error codes e
 | Formula verification workbook / fixture | Not found in tracked app test assets |
 | License/provenance/SBOM for bundled LO core | Missing |
 
-## 9. Implementation sequence and stop/go criteria
+## 10. Exact MainActivity migration points discovered
+
+A full fetch of the current 3,351-line `MainActivity.kt` confirms two active calculation paths, not one:
+
+- `scheduleFormulaRecalculation()` around lines 1,660–1,710: snapshots workbook maps, evaluates formulas on the background executor, currently tries local special cases, then `PoiFormulaBridge.evaluate(...)`, then `FormulaEngine`, and commits results into `formulaDisplayCache`.
+- `display(address)` around lines 2,735–2,780: synchronously tries local formula evaluation, then `PoiFormulaBridge.evaluate(sheets, sheetName, address, expression)`, then Kotlin `FormulaEngine`. This can be reached from rendering and must not become a synchronous JNI/Calc call.
+- `formulaDisplayCache` is invalidated at many mutation points and currently keys rendered values by sheet/address/formula/number format.
+
+Required migration:
+1. Introduce one workbook-scoped Calc document session; do not create a temporary Calc document for each formula cell.
+2. On import/open, create the LO document and hydrate the existing UI's cell snapshot from the authoritative Calc workbook.
+3. On cell edit/paste/fill/sort/sheet operation, enqueue a revision-tagged batch update to the single Calc worker.
+4. Recalculate once per committed batch (dirty calculation by default; explicit full calculation for open/refresh/verification).
+5. Return a revision-tagged batch of formula result snapshots; discard stale responses if the UI workbook revision has advanced.
+6. Replace the POI/Kotlin evaluator branch in `scheduleFormulaRecalculation()` with the engine service.
+7. Change `display(address)` to a pure cache lookup for formula cells (show a pending marker while a Calc result is pending). It must never call JNI or calculate formulas.
+8. Keep number-format rendering in Kotlin only if it does not alter the stored Calc value; otherwise request formatted display text from Calc.
+9. Save/export from the LO document, not by rewriting it through the current limited `XlsxCodec`.
+10. Add a guard test that fails if `PoiFormulaBridge.evaluate` or `FormulaEngine.eval` is reached from the Native UI's active production formula path after migration.
+
+The existing `backgroundExecutor` has four workers. LibreOffice document handles must not be concurrently accessed by four workers: use a dedicated single-thread executor for every call into one LO document, with explicit queue/back-pressure and revision cancellation. The existing general executor can continue to handle independent non-LO operations.
+
+## 11. Implementation sequence and stop/go criteria
 
 **Milestone A — provenance and binary audit**
 - Obtain the user's earlier native-core and diagnostics archives or locate their exact repository artifacts.
