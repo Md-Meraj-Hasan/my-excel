@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Strict packaging/source audit for NiceExcel's LibreOffice Android runtime.
 
-This is deliberately a gate, not a fake formula test. It fails until a matching
-LibreOffice Android core, bootstrap, JNI bridge and runtime payload are present.
+This is deliberately a gate, not a fake formula test. It fails until the matching
+LibreOfficeKit bootstrap, Calc service, ARM64 core and runtime payload are present.
 """
 from __future__ import annotations
 
