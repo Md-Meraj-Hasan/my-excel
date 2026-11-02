@@ -35,8 +35,8 @@ for name in "${required[@]}"; do
     echo "ERROR: Required matching LibreOffice ARM64 library is missing: $f" >&2
     exit 5
   fi
-  file_class=$("$READELF" -h "$f" | awk -F: '/Class:/{gsub(/^[ \\t]+/,"",$2); print $2}')
-  file_machine=$("$READELF" -h "$f" | awk -F: '/Machine:/{gsub(/^[ \\t]+/,"",$2); print $2}')
+  file_class=$("$READELF" -h "$f" | awk -F: '/Class:/{gsub(/^[ \t]+/,"",$2); print $2}')
+  file_machine=$("$READELF" -h "$f" | awk -F: '/Machine:/{gsub(/^[ \t]+/,"",$2); print $2}')
   if [[ "$file_class" != "ELF64" || "$file_machine" != *AArch64* ]]; then
     echo "ERROR: $name is not ELF64 AArch64 (class=$file_class machine=$file_machine)" >&2
     exit 6
@@ -52,6 +52,6 @@ fi
 
 echo "OK: All ${#required[@]} LibreOffice ARM64 libraries are ELF64 AArch64:"
 for f in "${SO_FILES[@]}"; do
-  printf ' - %s (%s bytes)\\n' "$(basename "$f")" "$(stat -c %s "$f")"
+  printf ' - %s (%s bytes)\n' "$(basename "$f")" "$(stat -c %s "$f")"
 done
 sha256sum "${SO_FILES[@]}"
