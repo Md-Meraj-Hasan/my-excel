@@ -1716,9 +1716,10 @@ class MainActivity : Activity() {
                             formulaDisplayCache[result.first] = result.second
                             if (formulaSheet == sheetName) cellViews[address]?.text = result.second
                         }
+                        status.text = "LibreOffice Calc • ${renderedResults.size} formulas calculated"
                         Log.i(
                             "NiceExcel-Formula",
-                            "LIBREOFFICE_CALC_SUCCESS formulas=${allFormulas.size} returned=${calcResults.size} affected=${renderedResults.size}"
+                            "LIBREOFFICE_CALC_SUCCESS engine=LibreOffice Calc formulas=${allFormulas.size} returned=${calcResults.size} updated=${renderedResults.size}"
                         )
                     }
                 } catch (failure: Throwable) {
