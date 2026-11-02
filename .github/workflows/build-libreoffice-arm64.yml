@@ -50,14 +50,14 @@ jobs:
       - name: Setup Android SDK and LibreOffice toolchain
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools platforms;android-30 build-tools;30.0.3 ndk;27.2.12479018'
+          packages: 'platform-tools platforms;android-30 build-tools;30.0.3 ndk;28.2.13676358'
 
       - name: Resolve Android NDK path
         shell: bash
         run: |
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
-          test -x "$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+          test -x "$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
 
       - name: Install LibreOffice build dependencies
         shell: bash
@@ -85,7 +85,7 @@ jobs:
         shell: bash
         run: |
           java -version
-          "$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
+          "$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
           git -C libreoffice-core rev-parse HEAD
           df -h
           free -h
