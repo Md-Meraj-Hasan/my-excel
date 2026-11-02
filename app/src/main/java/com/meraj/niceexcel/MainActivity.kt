@@ -2939,17 +2939,3 @@ class MainActivity : Activity() {
         out.add(cur.toString()); return out
     }
 }
-
-/**
- * Restrict local evaluation of direct references to values whose type/error marker
- * POI's workbook bridge may coerce. Ordinary formulas remain on the POI-first path.
- */
-internal fun shouldUseLocalReferenceResult(expression: String, cells: Map<String, String>): Boolean {
-    val match = Regex("(?i)^\\$?([A-Z]{1,3})\\$?(\\d+)$").matchEntire(expression.trim()) ?: return false
-    val address = match.groupValues[1].uppercase(Locale.US) + match.groupValues[2]
-    val source = cells[address] ?: return false
-    if (source.equals("TRUE", ignoreCase = true) || source.equals("FALSE", ignoreCase = true) || source.startsWith("#")) return true
-    if (!source.trimStart().startsWith("=")) return false
-    val nestedExpression = source.trimStart().drop(1).trim()
-    return Regex("(?i)^(XOR|VLOOKUP|MATCH|NA|INDEX)\\s*\\(").containsMatchIn(nestedExpression)
-}
