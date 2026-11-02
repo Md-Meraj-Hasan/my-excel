@@ -105,15 +105,20 @@ def main() -> int:
             errors.append("Native scheduleFormulaRecalculation is not routed through LibreOfficeServiceClient")
         if "PoiFormulaBridge.evaluate" in active_calc or "FormulaEngine(" in active_calc:
             errors.append("POI/Kotlin fallback evaluator is still present in the active Native formula path")
-        if "saveXlsxWithLibreOffice" not in main_source:
+        if re.search(r"\\bFormulaEngine\\s*\\(", main_source):
+            errors.append("Legacy local FormulaEngine implementation must not ship beside LibreOfficeKit")
+        if re.search(r"\\bFormulaEvaluator\\b", main_source):
+            errors.append("Native MainActivity must not invoke Apache POI FormulaEvaluator")
+        if "saveXlsxWithLibreOffice" not in main_source or "LibreOfficeServiceClient.recalculateFile" not in main_source:
             errors.append("Native XLSX Save path is not routed through LibreOffice")
+
     if manifest_path.is_file():
         manifest_text = manifest_path.read_text(encoding="utf-8")
         if 'android:process=":libreoffice"' not in manifest_text or 'android:exported="false"' not in manifest_text:
             errors.append("AndroidManifest does not declare the private :libreoffice service process")
     if gradle_path.is_file():
         gradle_text = gradle_path.read_text(encoding="utf-8")
-        for token in ['noCompress += ""', "useLegacyPackaging true", "native-engine/jniLibs", "poi-ooxml:5.4.1"]:
+        for token in ['noCompress += ""', "noCompress += libreOfficeAssetExtensions", "useLegacyPackaging true", "native-engine/jniLibs", "poi-ooxml:5.4.1"]:
             if token not in gradle_text:
                 errors.append(f"app/build.gradle is missing required LibreOffice packaging configuration: {token}")
 
