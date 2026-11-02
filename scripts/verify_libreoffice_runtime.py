@@ -144,6 +144,10 @@ def main() -> int:
             if not bootstrap_present:
                 errors.append("Compiled DEX does not contain the LibreOfficeKit bootstrap marker")
 
+            core_zip_path = "lib/arm64-v8a/liblo-native-code.so"
+            if core_zip_path in name_set and zf.getinfo(core_zip_path).compress_type == zipfile.ZIP_STORED:
+                errors.append("liblo-native-code.so is not compressed; expected packaging.jniLibs.useLegacyPackaging=true")
+
             runtime_files = [n for n in names if n.startswith(RUNTIME_PREFIXES)]
             required_runtime = runtime_manifest.get("required_runtime_file_basenames", [])
             required_asset_paths = runtime_manifest.get("required_runtime_asset_paths", [])
