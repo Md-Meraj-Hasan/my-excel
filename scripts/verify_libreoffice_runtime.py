@@ -66,6 +66,7 @@ def main() -> int:
         "NiceExcel JNI adapter C++": [
             root / "native/libreoffice/src/niceexcel_calc_bridge.cxx",
         ],
+        "Runtime manifest": [root / "native/libreoffice/runtime-manifest.json"],
         "LibreOffice core build integration patch": [
             root / "native/libreoffice/patches/0001-niceexcel-calc-jni.patch",
         ],
@@ -169,7 +170,8 @@ def main() -> int:
 
             report["checks"]["bootstrap_dex_present"] = bootstrap_present
             report["checks"]["runtime_asset_file_count"] = len(runtime_files)
-            report["checks"]["required_runtime_files"] = {"expected": required_runtime, "missing": missing_runtime}\n            report["checks"]["native_libraries"] = native_status\n            report["checks"]["license_notice_file_count"] = len(license_files)
+            report["checks"]["required_runtime_files"] = {"expected": required_runtime, "missing": missing_runtime}
+            report["checks"]["native_libraries"] = native_status
             report["checks"]["abis"] = abi_status
 
             readelf = shutil.which("readelf")
