@@ -256,10 +256,11 @@ Completed in this work branch:
 - routed Native formula recalculation through LibreOffice and made grid rendering cache-only;
 - routed formula-containing XLSX Save operations through Calc before writing the selected destination;
 - added formula fixture vectors, Android instrumentation tests, fixture validation, source compile gate, native build workflow, APK packaging workflow and real-phone acceptance workflow;
+- passed GitHub Actions source gate: fixture validation, JVM unit tests and Android instrumentation APK compilation succeeded (run 41388628825);
 - added strict checks for the native libraries, asset files, STORE compression, bootstrap DEX marker, binary hashes, service process and absence of POI/Kotlin fallback in the active Native formula path.
 
 Not yet completed:
-- run and fix the source/instrumentation compile CI;
+- run the native build workflow in the target repository and stage its artifacts;
 - execute the native build workflow in the target repository and stage its artifacts;
 - produce and inspect the target `my-excel` LibreOffice-enabled APK;
 - run the two formula instrumentation tests on a real ARM64 Android phone;
