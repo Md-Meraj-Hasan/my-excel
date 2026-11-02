@@ -247,7 +247,7 @@ Capture:
 ## 10. Current status and next steps
 
 Completed in this work branch:
-- created the development branch and draft pull request;
+- created the development branch and opened PR #1 for review;
 - inspected the target `my-excel` formula call paths and compared the older `Nice-Excel` implementation;
 - recovered and inspected the actual ARM64 native-core, runtime-assets and diagnostics artifacts from run 41280547094;
 - verified all 14 native libraries are ELF64 AArch64, recorded SHA-256 values, and checked ELF dependency closure;
@@ -261,7 +261,6 @@ Completed in this work branch:
 
 Not yet completed:
 - run the native build workflow in the target repository and stage its artifacts;
-- execute the native build workflow in the target repository and stage its artifacts;
 - produce and inspect the target `my-excel` LibreOffice-enabled APK;
 - run the two formula instrumentation tests on a real ARM64 Android phone;
 - confirm the real phone logcat includes `CALC_COMMAND_SUCCESS` and `CALC_SAVE_REOPEN_OK`.
