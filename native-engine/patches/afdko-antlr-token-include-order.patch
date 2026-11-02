@@ -1,0 +1,10 @@
+--- a4/runtime/src/tree/pattern/ParseTreePatternMatcher.cpp
++++ a4/runtime/src/tree/pattern/ParseTreePatternMatcher.cpp
+@@ -3,6 +3,7 @@
+  * can be found in the LICENSE.txt file in the project root.
+  */
+ 
++#include "Token.h"
+ #include <exception>
+ #include <map>
+ #include <memory>
