@@ -43,7 +43,7 @@ Findings:
 3. `XlsxCodec.kt` is a lightweight OOXML codec and explicitly does not preserve every Excel feature. It stores formula strings but does not itself calculate them or write verified formula cached results.
 4. `app/build.gradle` has Apache POI 5.4.1 and Chaquopy 16.1.0 / Python 3.11. The configured ABI filters currently include `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
 5. The app uses AGP 8.9.2, Kotlin 2.1.10, Java 17, compileSdk 35; CI uses Gradle 8.11.1.
-6. The tracked tree has no `app/src/main/cpp`, CMakeLists, `app/src/main/jniLibs`, `liblo-native-code.so`, official LOK bootstrap Java package, or LO runtime asset tree.
+6. The tracked tree has no `app/src/main/cpp`, `app/src/main/jniLibs`, `liblo-native-code.so`, official LOK bootstrap Java package, or LO runtime asset tree.
 7. The tracked Android manifest requests INTERNET and cleartext traffic for the existing Flask/WebView feature. This is separate from the calculation engine; the Calc engine itself must work offline.
 8. `LIBREOFFICEKIT-POC-NEXT-STEPS.md` already states that the native core is not integrated.
 
