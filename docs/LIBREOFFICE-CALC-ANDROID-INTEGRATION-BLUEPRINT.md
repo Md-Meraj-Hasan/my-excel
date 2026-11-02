@@ -223,7 +223,23 @@ Required migration:
 
 The existing `backgroundExecutor` has four workers. LibreOffice document handles must not be concurrently accessed by four workers: use a dedicated single-thread executor for every call into one LO document, with explicit queue/back-pressure and revision cancellation. The existing general executor can continue to handle independent non-LO operations.
 
-## 11. Implementation sequence and stop/go criteria
+## 12. Formula language and reference grammar (must be tested explicitly)
+
+The UNO `XCell.setFormula()` API does **not** promise to accept arbitrary locale-specific UI formula text. The official API reference specifies **API English with A1 reference style grammar**. Calc's user-facing formula syntax can vary by locale and by selected Calc/Excel reference convention; sheet references can differ between Calc A1 and Excel A1, and function argument separators are configurable.
+
+Implementation rules:
+- Define the NiceExcel formula-bar input contract as Excel-English/A1 (the user-facing syntax already used by the app), then parse/translate it through LibreOffice's formula parser/grammar APIs into the UNO API formula representation.
+- Do not perform global comma/semicolon or `!`/`.` string replacement: quoted text, array constants, sheet names and nested formulas make naive rewriting unsafe.
+- Read back the formula through UNO and convert it to the NiceExcel display/input grammar using the same parser/token representation.
+- On XLSX import, let LibreOffice's XLSX filter translate the file formulas; do not reparse raw OOXML formulas with the Kotlin evaluator.
+- Include grammar conformance tests for quoted sheet names, absolute references, named ranges, function argument separators, arrays, localized decimal settings and formulas containing commas/semicolons inside quoted text.
+
+References:
+- UNO `XCell.setFormula()` requires API English with A1 reference grammar: https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1table_1_1XCell.html
+- `XFormulaParser` parses formula text to tokens and prints tokens back to formula text: https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1sheet_1_1XFormulaParser.html
+- Calc exposes Calc A1, Excel A1 and Excel R1C1 syntax options and configurable separators: https://help.libreoffice.org/latest/en-GB/text/shared/optionen/01060900.html
+
+## 13. Implementation sequence and stop/go criteria
 
 **Milestone A — provenance and binary audit**
 - Obtain the user's earlier native-core and diagnostics archives or locate their exact repository artifacts.
