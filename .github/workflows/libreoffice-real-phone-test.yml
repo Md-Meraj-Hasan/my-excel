@@ -24,11 +24,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Android platform tools
-        uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
-
       - name: Download LibreOffice-enabled ARM64 app APK
         uses: actions/download-artifact@v4
         with:
@@ -50,8 +45,15 @@ jobs:
       - name: Verify connected physical ARM64 phone
         shell: pwsh
         run: |
-          $adb = Join-Path $env:ANDROID_HOME "platform-tools/adb.exe"
-          if (!(Test-Path $adb)) { throw "adb.exe not found under ANDROID_HOME" }
+          $adbCommand = Get-Command adb.exe -ErrorAction SilentlyContinue
+          if ($adbCommand) {
+            $adb = $adbCommand.Source
+          } elseif ($env:ANDROID_HOME) {
+            $adb = Join-Path $env:ANDROID_HOME "platform-tools/adb.exe"
+          } else {
+            throw "Install Android SDK Platform Tools and add adb.exe to PATH (or set ANDROID_HOME)."
+          }
+          if (!(Test-Path $adb)) { throw "adb.exe not found: $adb" }
           & $adb start-server
           & $adb devices -l
           $online = @(& $adb devices | Select-String "\sdevice$")
