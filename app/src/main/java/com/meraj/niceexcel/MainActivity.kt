@@ -1649,10 +1649,10 @@ class MainActivity : Activity() {
      * initial workbook/sheet calculation. After an edit, only that cell and its
      * transitive formula dependents are recalculated; unrelated formulas are skipped.
      */
+    @Suppress("UNUSED_PARAMETER")
     private fun scheduleFormulaRecalculation(changedCells: Set<String>? = null) {
         val jobId = formulaRecalcJobId.incrementAndGet()
         val revision = workbookRevision.get()
-        val activeSheet = sheetName
         val allSheetsSnapshot = sheets.mapValues { (_, cells) -> cells.toMap() }
         val stylesSnapshot = styles.mapValues { (_, map) -> map.toMap() }
         val allFormulas = allSheetsSnapshot.flatMap { (name, cells) ->
