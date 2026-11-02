@@ -43,7 +43,7 @@ jobs:
         timeout-minutes: 240
         with:
           script: |
-            const branch = context.ref.replace(/^refs\\/heads\\//, "");
+            const branch = context.ref.replace("refs/heads/", "");
             const deadline = Date.now() + 4 * 60 * 60 * 1000;
             while (Date.now() < deadline) {
               const response = await github.rest.actions.listWorkflowRuns({
@@ -81,7 +81,7 @@ jobs:
         with:
           name: libreoffice-arm64-runtime-assets
           repository: ${{ github.repository }}
-          run-id: ${{ github.event.workflow_run.id || inputs.native_run_id }}
+          run-id: ${{ github.event.workflow_run.id || inputs.native_run_id || steps.native-run.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: /tmp/libreoffice-runtime
 
