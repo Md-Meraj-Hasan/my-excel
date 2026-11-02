@@ -1661,29 +1661,10 @@ class MainActivity : Activity() {
         }
         if (allFormulas.isEmpty()) return
 
-        val formulas = if (changedCells == null) {
-            allFormulas
-        } else {
-            val dependencies = allFormulas.associate { (name, address, raw) ->
-                "$name!$address" to formulaDependencies(name, raw.drop(1), allSheetsSnapshot)
-            }
-            val affected = changedCells.mapTo(linkedSetOf()) { key ->
-                val split = key.lastIndexOf('!')
-                if (split >= 0) "${key.substring(0, split)}!${key.substring(split + 1).uppercase(Locale.US)}"
-                else "$activeSheet!${key.uppercase(Locale.US)}"
-            }
-            var expanded: Boolean
-            do {
-                expanded = false
-                dependencies.forEach { (formulaKey, refs) ->
-                    if (formulaKey !in affected && refs.any { it in affected }) {
-                        affected.add(formulaKey)
-                        expanded = true
-                    }
-                }
-            } while (expanded)
-            allFormulas.filter { (name, address, _) -> "$name!$address" in affected }
-        }
+        // Calc performs a hard workbook recalculation, so update every formula
+        // result returned by Calc. This avoids stale UI values if a local dependency
+        // parser misses a valid Excel reference form.
+        val formulas = allFormulas
         if (formulas.isEmpty()) return
 
         formulas.forEach { (formulaSheet, address, _) ->
