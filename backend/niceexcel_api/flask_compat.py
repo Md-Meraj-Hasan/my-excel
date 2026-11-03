@@ -44,7 +44,7 @@ class _FlaskApp(Flask):
     def _route(self, path, methods):
         flask_path = path
         import re
-        flask_path = re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", r"<\1>", flask_path)
+        flask_path = re.sub(r"\\{([A-Za-z_][A-Za-z0-9_]*)\\}", r"<\\1>", flask_path)
         def decorator(fn):
             sig = inspect.signature(fn)
             try: hints = get_type_hints(fn)
@@ -71,9 +71,6 @@ class _FlaskApp(Flask):
                             if body_cache is None:
                                 body_cache = flask_request.get_json(silent=True) or {}
                             model = annotation
-                            # Plain dictionary payloads (for example history-batch's
-                            # {"actions": ["undo", "redo"]}) are already decoded JSON.
-                            # They must not be sent through Pydantic's parse_obj().
                             if model is dict or get_origin(model) is dict:
                                 args[name] = body_cache
                             else:
@@ -87,7 +84,7 @@ class _FlaskApp(Flask):
                             args[name] = default
                     result = asyncio.run(fn(**args)) if async_fn else fn(**args)
                     if isinstance(result, Response): return result
-                    if isinstance(result, dict) or isinstance(result, list): return jsonify(result)
+                    if isinstance(result, (dict, list)): return jsonify(result)
                     return result
                 except HTTPException as exc:
                     return jsonify({"detail": exc.detail}), exc.status_code
@@ -100,6 +97,13 @@ class _FlaskApp(Flask):
 
 def create_app(import_name):
     app = _FlaskApp(import_name)
+
+    # Also translate adapter HTTP errors raised by ordinary Flask routes
+    # (for example the catch-all static-file route), not only wrapped API handlers.
+    @app.errorhandler(HTTPException)
+    def handle_adapter_http_exception(exc):
+        return jsonify({"detail": exc.detail}), exc.status_code
+
     return app
 
 def FileResponse(path, media_type=None, filename=None, background=None):
