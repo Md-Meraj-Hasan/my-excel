@@ -435,3 +435,41 @@ def test_history_batch_undo_redo():
     assert response.status_code == 200
     assert response.get_json()['changed'] is True
     assert len(response.get_json()['results']) == 2
+
+
+def test_open_workbook_multipart_upload_roundtrip():
+    import io
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    workbook.active.title = "Imported"
+    workbook.active["A1"] = "Flask upload works"
+    workbook.active["B1"] = 42
+    payload = io.BytesIO()
+    workbook.save(payload)
+    payload.seek(0)
+
+    response = client.post(
+        "/workbooks/open",
+        data={"file": (payload, "sample.xlsx")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200, response.get_data(as_text=True)
+    opened = response.get_json()
+    assert opened["sheets"] == ["Imported"]
+    book_id = opened["workbook_id"]
+    cells = client.get(
+        f"/workbooks/{book_id}/range",
+        query_string={"sheet": "Imported", "range": "A1:B1"},
+    )
+    assert cells.status_code == 200
+    assert cells.get_json()["rows"][0][0]["value"] == "Flask upload works"
+    assert cells.get_json()["rows"][0][1]["value"] == 42
+
+
+def test_static_fallback_does_not_hide_api_health_endpoint():
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.get_json()["status"] == "ok"
+    missing_asset = client.get("/assets/does-not-exist.js")
+    assert missing_asset.status_code == 404
