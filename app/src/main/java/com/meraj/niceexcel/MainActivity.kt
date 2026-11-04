@@ -711,7 +711,7 @@ class MainActivity : Activity() {
         val columnValues = if (col != null && query != null) {
             (2..rowLimit).associateWith { row -> data["${col}$row"].orEmpty() }
         } else emptyMap()
-        status.text = if (query.isNullOrEmpty()) "Clearing filter…" else "Applying filter…"
+        status.text = if (col == null || query == null) "Clearing filter…" else "Applying filter…"
         try {
             backgroundExecutor.execute {
                 try {
@@ -750,7 +750,7 @@ class MainActivity : Activity() {
                         }
                         frozenRowHorizontal.visibility = android.view.View.VISIBLE
                         grid.requestLayout()
-                        status.text = if (query.isNullOrEmpty()) "Filter cleared" else "Filter: $col contains '$query'"
+                        status.text = if (col == null || query == null) "Filter cleared" else "Filter: $col $mode '$query'"
                     }
                 } catch (error: Exception) {
                     mainHandler.post {
