@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     private var reportingMetadata: String? = null
     private var filterColumn: String? = null
     private var filterText: String? = null
+    private var filterMode: String = "contains"
     private var tableHeaderRow: Int? = null
     private var sheetName = "Sheet1"
     private var selected = "A1"
@@ -704,12 +705,13 @@ class MainActivity : Activity() {
         val capturedRevision = workbookRevision.get()
         val col = filterColumn
         val query = filterText
+        val mode = filterMode
         val rowLimit = rowCount
         // Worker receives immutable values only; it never reads workbook maps or Android Views.
         val columnValues = if (col != null && query != null) {
             (2..rowLimit).associateWith { row -> data["${col}$row"].orEmpty() }
         } else emptyMap()
-        status.text = if (query.isNullOrEmpty()) "Clearing filter…" else "Applying filter…"
+        status.text = if (col == null || query == null) "Clearing filter…" else "Applying filter…"
         try {
             backgroundExecutor.execute {
                 try {
@@ -717,7 +719,16 @@ class MainActivity : Activity() {
                         (2..rowLimit).toSet()
                     } else {
                         columnValues.asSequence()
-                            .filter { (_, value) -> value.contains(query, ignoreCase = true) }
+                            .filter { (_, value) ->
+                                when (mode) {
+                                    "starts-with" -> value.trim().startsWith(query, ignoreCase = true)
+                                    "equals" -> value.trim().equals(query, ignoreCase = true)
+                                    "not-equal" -> !value.trim().equals(query, ignoreCase = true)
+                                    "blank" -> value.isBlank()
+                                    "not-blank" -> value.isNotBlank()
+                                    else -> value.contains(query, ignoreCase = true)
+                                }
+                            }
                             .map { it.key }
                             .toSet()
                     }
@@ -727,7 +738,7 @@ class MainActivity : Activity() {
                         if (isFinishing || isDestroyed || jobId != filterJobId.get() ||
                             sheetName != capturedSheet || rowCount != rowLimit ||
                             workbookRevision.get() != capturedRevision ||
-                            filterColumn != col || filterText != query) return@post
+                            filterColumn != col || filterText != query || filterMode != mode) return@post
                         if (col != null && query != null && columnValues.any { (row, value) ->
                                 data["${col}$row"].orEmpty() != value
                             }) return@post
@@ -739,7 +750,7 @@ class MainActivity : Activity() {
                         }
                         frozenRowHorizontal.visibility = android.view.View.VISIBLE
                         grid.requestLayout()
-                        status.text = if (query.isNullOrEmpty()) "Filter cleared" else "Filter: $col contains '$query'"
+                        status.text = if (col == null || query == null) "Filter cleared" else "Filter: $col $mode '$query'"
                     }
                 } catch (error: Exception) {
                     mainHandler.post {
@@ -1047,7 +1058,16 @@ class MainActivity : Activity() {
 
     private fun rowPassesFilter(row: Int): Boolean {
         if (filterColumn == null || filterText == null || row <= 1) return true
-        return data["${filterColumn}$row"].orEmpty().contains(filterText!!, ignoreCase = true)
+        val value = data["${filterColumn}$row"].orEmpty()
+        val query = filterText!!
+        return when (filterMode) {
+            "starts-with" -> value.trim().startsWith(query, ignoreCase = true)
+            "equals" -> value.trim().equals(query, ignoreCase = true)
+            "not-equal" -> !value.trim().equals(query, ignoreCase = true)
+            "blank" -> value.isBlank()
+            "not-blank" -> value.isNotBlank()
+            else -> value.contains(query, ignoreCase = true)
+        }
     }
 
     private fun createRowView(row: Int, columnWidths: List<Int>): LinearLayout {
@@ -2558,8 +2578,13 @@ class MainActivity : Activity() {
             setText(filterColumn ?: selectedCol)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
         }
+        val modeInput = android.widget.Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("Contains", "Starts With", "Equal", "Not Equal", "Blank", "Not Blank"))
+            setSelection(listOf("contains", "starts-with", "equals", "not-equal", "blank", "not-blank").indexOf(filterMode).coerceAtLeast(0))
+        }
         val queryInput = EditText(this).apply {
-            hint = "Text contains… (blank clears filter)"
+            hint = "Enter match value (e.g. 47)"
             setSingleLine(true)
             setText(filterText.orEmpty())
         }
@@ -2572,6 +2597,8 @@ class MainActivity : Activity() {
                 setTextColor(Color.rgb(45, 65, 54))
             })
             addView(columnInput, LinearLayout.LayoutParams(-1, -2))
+            addView(TextView(this@MainActivity).apply { text = "Match condition"; textSize = 13f; setTextColor(Color.rgb(45, 65, 54)); setPadding(0, dp(10), 0, 0) })
+            addView(modeInput, LinearLayout.LayoutParams(-1, -2))
             addView(TextView(this@MainActivity).apply {
                 text = "Show rows where the selected column contains:"
                 textSize = 13f
@@ -2586,20 +2613,22 @@ class MainActivity : Activity() {
             .setPositiveButton("Apply") { _, _ ->
                 val col = columnInput.text.toString().trim().uppercase(Locale.ROOT)
                 val q = queryInput.text.toString().trim()
-                if (q.isEmpty()) {
-                    filterColumn = null
-                    filterText = null
-                } else if (!Regex("^[A-Z]{1,3}$").matches(col) || columnIndex(col) !in 0 until colLimit) {
+                val mode = listOf("contains", "starts-with", "equals", "not-equal", "blank", "not-blank").getOrElse(modeInput.selectedItemPosition) { "contains" }
+                if (!Regex("^[A-Z]{1,3}$").matches(col) || columnIndex(col) !in 0 until colLimit) {
                     status.text = "Invalid column. Enter a valid column letter."
+                } else if (mode !in listOf("blank", "not-blank") && q.isEmpty()) {
+                    status.text = "Enter a match value."
                 } else {
                     filterColumn = col
-                    filterText = q
+                    filterText = if (mode == "blank" || mode == "not-blank") "" else q
+                    filterMode = mode
                 }
                 refreshFilterVisibility()
             }
             .setNeutralButton("Clear filter") { _, _ ->
                 filterColumn = null
                 filterText = null
+                filterMode = "contains"
                 refreshFilterVisibility()
             }
             .setNegativeButton("Cancel", null)
