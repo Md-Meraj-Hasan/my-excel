@@ -4,7 +4,7 @@ name: Build Nice Excel APK
 "on":
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches: [main, master, feature/niceexcel-startswith-icon5]
 
 permissions:
   contents: read
